@@ -1,8 +1,8 @@
 // mp-now — then and now: MapReduce's disk between every step; today's exchange in memory, with
-// many stages; joins that skip the exchange (broadcast, colocated); plans that change while they run.
+// many stages; plans that change while they run (a join switched to broadcast, as mp-join shows it).
 // A concept strip with no measured numbers of its own; the 29–30 stages are the exact median's
 // plan from _measurements.md. Sources (read from the papers): Dean & Ghemawat 2004; Snowflake
-// 2016; Dremel 2020; Spark's adaptive query execution; Redshift distribution keys.
+// 2016; Dremel 2020; Spark's adaptive query execution.
 // The timelines are pictures of order (what waits for what), not measured durations.
 import { LOOK, arrow, on, t, widget, zone } from "./mp-lib.js";
 
@@ -13,10 +13,8 @@ const steps = (D) => [
     note: `Map reads a share and reduces it, the shuffle moves its output by key, reduce finishes each key. Every step writes its output to disk before the next reads it, and a question of several steps runs as several jobs, one after another.` },
   { stop: "In memory", title: "Today: the exchange stays in memory",
     note: `Stages hand their rows to the next through memory, and the next starts before the last has finished. So a plan can have many stages: the exact median above had ${D.medianStages}. Spark still writes its shuffle files to local disk by default.` },
-  { stop: "No exchange", title: "The cheapest exchange is the one that never happens", decisive: true,
-    note: `A join to a small table copies the small table to every worker (<b>broadcast</b>), and the big one stays where it is. Two tables split by the same key (<b>colocated</b>) join on the spot: matching rows are already on the same worker.` },
   { stop: "Adapt", title: "Plans that change while they run",
-    note: `After a stage the engine knows the real sizes and rewrites the rest of the plan: a side that turned out small is broadcast instead of exchanged, a key that turned out huge is split over several workers. Spark calls this adaptive query execution; Dremel, BigQuery's engine, switches a join to broadcast mid-query.` },
+    note: `After a stage the engine knows the real sizes and rewrites the rest of the plan: a shuffle join whose side turned out small becomes a broadcast join, a key that turned out huge is split over several workers. Spark calls this adaptive query execution; Dremel, BigQuery's engine, switches a join to broadcast mid-query.` },
 ];
 
 const CSS = LOOK("nw") + `
@@ -27,12 +25,6 @@ const CSS = LOOK("nw") + `
 .lw .nw .mem { fill:var(--ok-bg); stroke:var(--ok); stroke-width:1.5; }
 .lw .nw .pin { stroke:var(--ok); stroke-width:1.5; }
 .lw .nw .seg { fill:var(--accent); } .lw .nw .seg.io { fill:var(--hot); }
-.lw .nw .big2 { fill:var(--accent-bg); stroke:var(--accent); stroke-width:1.5; }
-.lw .nw .small2 { fill:var(--ok-bg); stroke:var(--ok); stroke-width:1.5; }
-.lw .nw .other { fill:var(--hot-bg); stroke:var(--hot); stroke-width:1.5; }
-.lw .nw .lk { stroke:var(--ok); stroke-width:1.5; fill:none; stroke-dasharray:4 4; }
-.lw .nw .cp { opacity:0; transform:translate(var(--dx), var(--dy)); }
-.lw .nw .st.on .cp { opacity:1; transform:none; transition:transform .9s cubic-bezier(.45,0,.2,1), opacity .3s; transition-delay:var(--d); }
 .lw .nw .tick { fill:var(--accent); opacity:0; }
 .lw .nw .st.on .tick { opacity:1; transition:opacity .3s; transition-delay:var(--d); }
 .lw .nw .ghost { opacity:.5; }
@@ -67,30 +59,16 @@ const memory = (D) => on("1", zone(11, 10, 738, 196, "TODAY: STAGES PIPELINED TH
   + Array.from({ length: 30 }, (_, i) => `<rect class="tick" style="--d:${200 + i * 35}ms" x="${27 + i * 23.6}" y="256" width="18" height="40" rx="6"/>`).join("")
   + t(380, 326, `the exact median's plan: ${D.medianStages} stages`, "h") + t(380, 356, "with a disk between each, it would be 30 jobs", "lbl"));
 
-// Step 2: broadcast (a small table's copies fly to every worker) and colocated (nothing moves).
-const piece = (x, y, cls, label, w = 96, more = "") => `<g ${more}><rect class="${cls}" x="${x}" y="${y}" width="${w}" height="28" rx="6"/>${t(x + w / 2, y + 15, label, "v")}</g>`;
-const PX = (w) => 170 + w * 145;
-const dock = (w) => `<rect class="lk" x="${PX(w)}" y="140" width="104" height="28" rx="6"/>`;
-const copy = (w) => piece(PX(w), 140, "small2", "systems", 104, `class="cp" style="--dx:${27 - PX(w)}px;--dy:0px;--d:${150 + w * 120}ms"`);
-const broadcast = () => zone(11, 10, 738, 186, "BROADCAST — A SMALL TABLE COPIED TO EVERY WORKER")
-  + [0, 1, 2, 3].map((w) => t(PX(w) + 52, 50, `worker ${w}`, "lbl") + piece(PX(w), 66, "big2", "polls ¼", 104) + dock(w) + copy(w)).join("")
-  + t(80, 80, "big: stays", "lbl") + piece(27, 140, "small2", "14 rows", 104) + t(80, 182, "small: copied", "lbl");
-const colocated = () => zone(11, 208, 738, 182, "COLOCATED — BOTH TABLES SPLIT BY THE SAME KEY")
-  + [0, 1, 2, 3].map((w) => t(PX(w) + 55, 248, `worker ${w}`, "lbl") + piece(PX(w), 262, "big2", `stations ${"ABCD"[w]}`, 110)
-    + `<path class="lk" d="M${PX(w) + 55} 290 V302"/>` + piece(PX(w), 302, "other", `trips ${"ABCD"[w]}`, 110)).join("")
-  + t(80, 290, "nothing", "h") + t(80, 314, "moves", "h") + t(380, 362, "the matching rows are already on the same worker", "lbl");
-const joins = () => on("2", broadcast() + colocated());
-
-// Step 3: one plan, before and after the engine sees the real sizes.
-const adapt = () => on("3", zone(11, 10, 738, 180, "PLANNED BEFORE THE RUN")
+// Step 2: one plan, before and after the engine sees the real sizes.
+const adapt = () => on("2", zone(11, 10, 738, 180, "PLANNED BEFORE THE RUN")
   + `<g class="ghost">${step(27, 50, 150, "scan A", "off") + step(27, 116, 150, "scan B", "off") + arrow(181, 70, 258) + arrow(181, 136, 258)
-  + step(262, 83, 210, "exchange both by key", "hotp") + arrow(476, 103, 520) + step(524, 83, 120, "join", "off")}</g>`
+  + step(262, 83, 210, "shuffle both by key", "hotp") + arrow(476, 103, 520) + step(524, 83, 120, "join", "off")}</g>`
   + t(367, 150, "dropped once scan B's real size is known", "lbl hot")
   + zone(11, 202, 738, 188, "AFTER SCAN B RAN: IT TURNED OUT SMALL")
   + step(27, 240, 150, "scan A") + step(27, 314, 150, "scan B") + t(102, 370, "small", "lbl")
   + arrow(181, 334, 258, "acc") + step(262, 314, 200, "broadcast B") + `<path class="arw acc" d="M462 334 H584 V286 M578 292 L584 286 L590 292"/>`
   + arrow(181, 260, 520) + step(524, 240, 120, "join") + t(350, 248, "A never moves", "h acc"));
 
-const scene = (D) => `<svg viewBox="0 0 760 400">${mapreduce()}${memory(D)}${joins()}${adapt()}</svg>`;
+const scene = (D) => `<svg viewBox="0 0 760 400">${mapreduce()}${memory(D)}${adapt()}</svg>`;
 
 export default widget({ key: "nw", label: "Then and now", css: CSS, steps, scene, captured: CAPTURED });

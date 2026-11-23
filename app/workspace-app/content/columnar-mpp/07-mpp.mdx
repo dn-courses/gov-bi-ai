@@ -157,6 +157,80 @@ print("rows per worker, 8 workers:", [f"{len(inbox):,}" for inbox in by_system_8
 </Step>
 </Scene>
 
+A join makes rows of two tables meet. The second table here is a small one, already in the cells:
+each system and its number of stations.
+
+<Scene widget="mp-join">
+<Step>
+
+```python
+station_counts = [(system, stations) for system, (stations, _) in SYSTEMS.items()]
+count_shares = [[row] for row in station_counts]  # split by arrival too: one row per worker
+
+def join_here(polls, counts):
+    """One worker joins what it holds: each poll with its system's number of stations."""
+    lookup = dict(counts)
+    return [poll + (lookup[poll[0]],) for poll in polls if poll[0] in lookup]
+
+for w in range(WORKERS):
+    systems = ", ".join(sorted({row[0] for row in shares[w]}))
+    print(f"worker {w}: polls of {systems}; the station count of {count_shares[w][0][0]}")
+found = sum(len(join_here(shares[w], count_shares[w])) for w in range(WORKERS))
+print(f"joined where they are: {found:,} of {len(rows):,} polls find their row")
+```
+
+</Step>
+<Step>
+
+```python
+polls_by_system, polls_moved = shuffle(shares, lambda row: row[0])
+counts_by_system, counts_moved = shuffle(count_shares, lambda row: row[0])
+joined = [join_here(polls_by_system[w], counts_by_system[w]) for w in range(WORKERS)]
+print(f"sent to another worker: {polls_moved:,} polls and {counts_moved} station counts")
+print("joined per worker:", [f"{len(part):,}" for part in joined])
+expected = sorted(row for part in joined for row in part)
+```
+
+</Step>
+<Step>
+
+```python
+copies, counts_sent = [[] for _ in range(WORKERS)], 0
+for w, share in enumerate(count_shares):
+    for row in share:
+        for to in range(WORKERS):  # every worker gets a copy of every row
+            copies[to].append(row)
+            counts_sent += to != w
+joined = [join_here(shares[w], copies[w]) for w in range(WORKERS)]
+print(f"sent to another worker: 0 polls and {counts_sent} station counts")
+print("joined per worker:", [f"{len(part):,}" for part in joined])
+same = sorted(row for part in joined for row in part) == expected
+print("the same rows as the shuffle join:", same)
+```
+
+A small side of n rows costs n × 3 copies; the shuffle sends ¾ of it and the polls. Where they cross:
+
+```python
+crossing = (WORKERS - 1) / WORKERS  # the share of a table that a shuffle sends away
+break_even = polls_moved / (WORKERS - 1 - crossing)
+print(f"broadcast sends less while the small side has under {break_even:,.0f} rows")
+```
+
+</Step>
+<Step>
+
+```python
+_, polls_stay = shuffle(by_system, lambda row: row[0])  # the polls, already split by system
+_, counts_stay = shuffle(counts_by_system, lambda row: row[0])
+joined = [join_here(by_system[w], counts_by_system[w]) for w in range(WORKERS)]
+print(f"sent to another worker: {polls_stay} polls and {counts_stay} station counts")
+same = sorted(row for part in joined for row in part) == expected
+print("the same rows as the shuffle join:", same)
+```
+
+</Step>
+</Scene>
+
 BigQuery is an MPP engine run as a service. The table is the real capture: fourteen systems polled
 every minute, 1.8 billion rows, 167 GB.
 
@@ -244,8 +318,6 @@ each share, repartitioned by the key and finished on the owner; MapReduce (2004)
 gave the exchange its name, the shuffle. What changed since is mostly how much it costs.
 
 <Scene widget="mp-now">
-<Step>
-</Step>
 <Step>
 </Step>
 <Step>
