@@ -1,0 +1,166 @@
+export const meta = { title: "A Team of Agents", minutes: 20, database: "pagila" };
+
+An agent that answers about data and about documents grows a tool for every new job: SQL tools,
+metrics, document search, a chart. All of them sit in one prompt, under one set of instructions and
+one database account.
+
+<Scene widget="agh-team">
+<Step>
+</Step>
+<Step>
+
+The setup cell writes the team as an ADK app: one folder under the agents directory.
+
+```python id=setup
+import os, pathlib, sys
+
+APP = pathlib.Path(os.environ["AGENTS_DIR"]) / "agh_team"
+APP.mkdir(exist_ok=True)
+(APP / "__init__.py").write_text("from . import agent\n")
+(APP / "agent.py").write_text('''
+import os
+import numpy as np
+import psycopg
+from google import genai
+from google.adk.agents import Agent
+from google.genai import types
+from pgvector.psycopg import register_vector
+
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+DB = os.environ["DATABASE_URL"]
+SQL_URL = DB.replace("postgres:postgres@", "agent_ro:agent_ro@")      # read-only role
+client = genai.Client()
+
+
+def run_sql(query: str) -> dict:
+    """Run one read-only PostgreSQL SELECT on the Pagila rental database; at most 20 rows."""
+    try:
+        with psycopg.connect(SQL_URL) as conn:
+            cur = conn.execute(query)
+            return {"columns": [d.name for d in cur.description], "rows": [[str(v) for v in r] for r in cur.fetchmany(20)]}
+    except psycopg.Error as e:
+        return {"error": str(e).strip()}
+
+
+def describe_table(table_name: str) -> dict:
+    """The columns and types of one Pagila table."""
+    return run_sql("SELECT column_name, data_type FROM information_schema.columns "
+                   f"WHERE table_schema = 'public' AND table_name = '{table_name.replace(chr(39), '')}'")
+
+
+def search_policies(query: str) -> dict:
+    """Search the policy documents (fees, refunds, opening hours, membership); the 3 closest passages."""
+    reply = client.models.embed_content(model="gemini-embedding-001", contents=[query], config=types.EmbedContentConfig(
+        output_dimensionality=1536, task_type="RETRIEVAL_QUERY"))
+    vector = np.array(reply.embeddings[0].values, dtype=np.float32)
+    with psycopg.connect(DB) as conn:
+        register_vector(conn)
+        rows = conn.execute("SELECT title, body FROM docs ORDER BY embedding <=> %s LIMIT 3",
+                            (vector / np.linalg.norm(vector),)).fetchall()
+    return {"passages": [{"title": t, "text": b} for t, b in rows]}
+
+
+sql_agent = Agent(
+    name="sql_agent", model=MODEL,
+    description="Answers questions about the rental data: films, customers, rentals, payments, stores.",
+    instruction="You query the Pagila PostgreSQL database. Describe a table before writing SQL on it. Answer from the rows only.",
+    tools=[describe_table, run_sql])
+
+docs_agent = Agent(
+    name="docs_agent", model=MODEL,
+    description="Answers questions about Pagila Video's rules and policies: fees, refunds, opening hours, membership.",
+    instruction="You answer from the policy documents only, and quote the passage you used. If they do not say, say so.",
+    tools=[search_policies])
+
+root_agent = Agent(
+    name="front_desk", model=MODEL,
+    description="The front desk of Pagila Video.",
+    instruction="Hand every question to the specialist whose description fits it. Do not answer yourself.",
+    sub_agents=[sql_agent, docs_agent])
+''')
+print(sorted(p.name for p in APP.iterdir()))
+
+# The documents agent searches docs.embedding: fill any row still without a vector.
+import numpy as np, psycopg
+from google import genai
+from google.genai import types
+from pgvector.psycopg import register_vector
+
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    register_vector(conn)
+    todo = conn.execute("SELECT id, body FROM docs WHERE embedding IS NULL ORDER BY id").fetchall()
+    if todo:
+        reply = genai.Client().models.embed_content(model="gemini-embedding-001", contents=[b for _, b in todo],
+            config=types.EmbedContentConfig(output_dimensionality=1536, task_type="RETRIEVAL_DOCUMENT"))
+        for (doc_id, _), e in zip(todo, reply.embeddings):
+            v = np.array(e.values, dtype=np.float32)
+            conn.execute("UPDATE docs SET embedding = %s WHERE id = %s", (v / np.linalg.norm(v), doc_id))
+print(len(todo), "documents embedded")
+```
+
+</Step>
+<Step>
+
+The runner from the ADK page, printing who did what:
+
+```python
+import importlib
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+sys.path.insert(0, os.environ["AGENTS_DIR"])
+team = importlib.reload(importlib.import_module("agh_team.agent"))
+
+
+def show(event):
+    for part in (event.content.parts if event.content else []):
+        if part.function_call:
+            print(f"  {event.author:<11} calls  {part.function_call.name}({dict(part.function_call.args or {})})")
+        elif part.text and not part.thought:
+            print(f"  {event.author:<11} says   {part.text.strip()[:200]}")
+
+
+async def chat(agent, questions):
+    runner = InMemoryRunner(agent=agent, app_name="agh_team")
+    session = await runner.session_service.create_session(app_name="agh_team", user_id="me")
+    for question in questions:
+        print("YOU:", question)
+        async for event in runner.run_async(user_id="me", session_id=session.id,
+                                            new_message=types.Content(role="user", parts=[types.Part(text=question)])):
+            show(event)
+
+
+await chat(team.root_agent, ["What does a Plus membership cost per month?"])
+```
+
+</Step>
+<Step>
+
+```python
+await chat(team.root_agent, ["What does a Plus membership cost per month?", "And the Family tier?",
+                             "How many films are rated PG-13?"])
+```
+
+</Step>
+<Step>
+
+The same specialists wrapped as tools of a root that answers itself:
+
+```python
+from google.adk.agents import Agent
+from google.adk.tools.agent_tool import AgentTool
+
+desk = Agent(name="front_desk_tools", model=team.MODEL, description="The front desk of Pagila Video.",
+             instruction="Ask the specialists for what you need, then answer the person yourself.",
+             tools=[AgentTool(agent=team.sql_agent.clone()), AgentTool(agent=team.docs_agent.clone())])
+await chat(desk, ["What is the late fee, and how many rentals have not been returned yet?"])
+```
+
+</Step>
+<Step>
+
+Open the ADK dev UI at [http://localhost:8000](http://localhost:8000), choose `agh_team`, and ask
+both kinds of question. The events panel shows the same transfers.
+
+</Step>
+</Scene>

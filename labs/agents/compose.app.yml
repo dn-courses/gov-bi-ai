@@ -1,0 +1,58 @@
+# What the agents lab adds when a course is presented from the lesson app (`just present agents`):
+# Gemini on Google Cloud for the cells, a place to see traces, and ADK's own dev UI.
+# Merged after labs/agents/compose.yml and before labs/base/compose.app.yml.
+#
+# The model is reached with the key file the course keeps in `secrets/` (the same one `bigquery`
+# cells use). The project comes from that file: server/start.sh exports GOOGLE_CLOUD_PROJECT.
+# "global" is where the models are served; no generative model runs in an Israeli region.
+
+x-google: &google
+  GOOGLE_APPLICATION_CREDENTIALS: /secrets/bigquery-key.json
+  GOOGLE_GENAI_USE_VERTEXAI: "true"
+  GOOGLE_CLOUD_LOCATION: global
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+  # No path would mean gRPC on 4317; this is OTLP over HTTP on the UI's port.
+  PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+  # The warehouse slice an agent may read (seed/05-shop-mart.sql), as the read-only analyst.
+  SHOP_URL: postgresql://analyst_ro:analyst_ro@postgres:5432/shop
+
+services:
+  workspace:
+    environment:
+      <<: *google
+      AGENTS_DIR: /work/agents
+    # `just present` starts the app and what it depends on: these two come up with it.
+    depends_on:
+      phoenix:
+        condition: service_started
+      adk:
+        condition: service_started
+
+  # Traces of every agent run, kept while the lab is up: http://localhost:6006
+  phoenix:
+    image: arizephoenix/phoenix:version-22.0.1
+    ports:
+      - "${PHOENIX_PORT:-6006}:6006"
+    environment:
+      # The image listens on every address, which would otherwise switch sign-in on.
+      PHOENIX_ENABLE_AUTH: "false"
+    restart: unless-stopped
+
+  # ADK's dev UI over the agents the cells write to /work/agents: http://localhost:8000
+  # The same image as the app, so the same packages; its own process, so it stays up between cells.
+  adk:
+    image: ${APP_IMAGE:-lesson-app:local}
+    command: ["bash", "/app/workspace-app/server/adk-web.sh"]
+    ports:
+      - "${ADK_PORT:-8000}:8000"
+    environment:
+      <<: *google
+      AGENTS_DIR: /work/agents
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/pagila
+    volumes:
+      - ../../secrets:/secrets:ro
+      - app-work:/work
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped

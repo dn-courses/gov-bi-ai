@@ -1,0 +1,231 @@
+export const meta = { title: "A Framework: Google ADK", minutes: 11, database: "pagila" };
+
+The SQL agent works, and every line of it is yours: the loop, the declarations, the history, the
+cap, the printing. A framework writes most of that once, for every agent.
+
+<Scene widget="agf-adk-split">
+<Step>
+</Step>
+<Step>
+
+What ADK's agent takes besides its tools: hooks around every model call and tool call, and a cap on
+model calls whose default is high enough that you set your own.
+
+```python
+import inspect
+
+from google.adk.agents import Agent
+from google.adk.agents.run_config import RunConfig
+
+print([name for name in inspect.signature(Agent).parameters if name.endswith("callback")])
+print("model calls allowed per question, by default:", RunConfig().max_llm_calls)
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## The SQL agent as an ADK agent
+
+<Scene widget="agf-adk-run">
+<Step>
+
+ADK finds an agent as a folder holding `agent.py`, which defines `root_agent`. The tools are the
+three plain functions; their signatures and docstrings are all the declaration there is.
+
+```python id=folder
+import os, pathlib
+
+AGENTS = pathlib.Path(os.environ["AGENTS_DIR"])
+folder = AGENTS / "adk_sql_agent"
+folder.mkdir(parents=True, exist_ok=True)
+(folder / "__init__.py").write_text("from . import agent\n")
+(folder / "agent.py").write_text('''\
+import os
+
+import psycopg
+from google.adk.agents import Agent
+
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def list_tables() -> dict:
+    """List the tables of the Pagila database. Takes no arguments."""
+    with psycopg.connect(AGENT_URL) as conn:
+        found = conn.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+              AND table_name NOT LIKE 'payment_p%' ORDER BY 1""").fetchall()
+    return {"tables": [name for (name,) in found]}
+
+
+def describe_table(table_name: str) -> dict:
+    """Columns and types of one table. Call it before writing SQL that reads the table.
+
+    Args:
+        table_name: the exact name, as list_tables returns it.
+    """
+    with psycopg.connect(AGENT_URL) as conn:
+        found = conn.execute("""
+            SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position""", (table_name,)).fetchall()
+    if not found:
+        return {"error": f"no such table: {table_name}", "hint": "call list_tables"}
+    return {"table": table_name, "columns": [f"{name} {kind}" for name, kind in found]}
+
+
+def run_sql(query: str) -> dict:
+    """Run one read-only PostgreSQL SELECT and return at most 50 rows.
+
+    Args:
+        query: a single SELECT statement.
+    """
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            found = cur.fetchmany(50)
+            return {"columns": [c.name for c in cur.description],
+                    "rows": [[str(v) for v in row] for row in found]}
+    except psycopg.Error as e:
+        return {"error": str(e).strip(), "hint": "fix the SQL; check names with describe_table"}
+
+
+root_agent = Agent(
+    name="adk_sql_agent",
+    model=os.environ["GEMINI_MODEL"],
+    description="Answers questions about the Pagila DVD-rental database with SQL.",
+    instruction=("You answer questions about the Pagila DVD-rental database. Find tables and columns "
+                 "with the tools, then query with run_sql. State exact numbers from the result."),
+    tools=[list_tables, describe_table, run_sql],
+)
+''')
+print(sorted(path.name for path in folder.iterdir()))
+```
+
+What ADK made of `run_sql`, without being told:
+
+```python
+import sys
+
+from google.adk.tools import FunctionTool
+
+sys.path.insert(0, str(AGENTS))
+for name in [name for name in sys.modules if name.startswith("adk_sql_agent")]:
+    del sys.modules[name]  # pick up the file as it is now
+from adk_sql_agent.agent import root_agent
+
+declaration = FunctionTool(root_agent.tools[2])._get_declaration()
+print(declaration.name)
+print(declaration.description)
+print(declaration.parameters_json_schema)
+```
+
+</Step>
+<Step>
+
+A runner holds the sessions and drives the loop; every step of it comes back as an event. This cell
+calls the model.
+
+```python
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+runner = InMemoryRunner(agent=root_agent, app_name="adk_sql_agent")
+
+
+async def ask(question, max_llm_calls=10):
+    session = await runner.session_service.create_session(app_name="adk_sql_agent", user_id="me")
+    message = types.Content(role="user", parts=[types.Part(text=question)])
+    async for event in runner.run_async(user_id="me", session_id=session.id, new_message=message,
+                                        run_config=RunConfig(max_llm_calls=max_llm_calls)):
+        for call in event.get_function_calls():
+            print(f"{event.author:>14} │ call      {call.name}({dict(call.args)})")
+        for response in event.get_function_responses():
+            print(f"{event.author:>14} │ response  {response.name} → {str(response.response)[:90]}")
+        if event.is_final_response():
+            print(f"{event.author:>14} │ final     {event.content.parts[0].text}")
+    stored = await runner.session_service.get_session(app_name="adk_sql_agent", user_id="me", session_id=session.id)
+    print("\nevents kept in the session:", len(stored.events))
+
+await ask("Which film category has the most films, and how many?")
+```
+
+The question is a known one; the full top three shows whether this run caught the tie:
+
+```sql
+SELECT c.name, count(*) AS films
+FROM category c JOIN film_category USING (category_id)
+GROUP BY c.name ORDER BY films DESC LIMIT 3;
+```
+
+</Step>
+<Step>
+
+The dev UI reads the same folder. Open http://localhost:8000, pick `adk_sql_agent`, ask a question,
+and click an event to see the request and response behind it.
+
+```python
+import json, urllib.request
+
+print(json.load(urllib.request.urlopen("http://adk:8000/list-apps")))
+```
+
+</Step>
+<Step>
+
+```python
+mcp_folder = AGENTS / "adk_sql_agent_mcp"
+mcp_folder.mkdir(exist_ok=True)
+(mcp_folder / "__init__.py").write_text("from . import agent\n")
+(mcp_folder / "server.py").write_text('''\
+import pathlib, sys
+
+from mcp.server import MCPServer
+
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
+from adk_sql_agent.agent import describe_table, list_tables, run_sql
+
+mcp = MCPServer("pagila")
+for tool in (list_tables, describe_table, run_sql):
+    mcp.tool()(tool)
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+''')
+(mcp_folder / "agent.py").write_text('''\
+import os, pathlib, sys
+
+from google.adk.agents import Agent
+from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+from mcp import StdioServerParameters
+
+SERVER = StdioServerParameters(command=sys.executable, args=[str(pathlib.Path(__file__).with_name("server.py"))],
+                               env=dict(os.environ))  # the server imports agent.py's tools, and its settings
+
+root_agent = Agent(
+    name="adk_sql_agent_mcp",
+    model=os.environ["GEMINI_MODEL"],
+    instruction=("You answer questions about the Pagila DVD-rental database. Find tables and columns "
+                 "with the tools, then query with run_sql. State exact numbers from the result."),
+    # errlog: where the server's own log goes (the cells capture stderr; this is the real one)
+    tools=[McpToolset(connection_params=StdioConnectionParams(server_params=SERVER, timeout=20),
+                      errlog=sys.__stderr__)],
+)
+''')
+
+for name in [name for name in sys.modules if name.startswith("adk_sql_agent_mcp")]:
+    del sys.modules[name]
+from adk_sql_agent_mcp.agent import root_agent as mcp_agent
+
+toolset = mcp_agent.tools[0]
+print("tools from the server:", [tool.name for tool in await toolset.get_tools()])
+await toolset.close()
+```
+
+</Step>
+</Scene>
+
+Everything a framework does not know stays on your side of the line: which tools exist, what the
+prompt says, which role reads the data, and whether the answer is right.

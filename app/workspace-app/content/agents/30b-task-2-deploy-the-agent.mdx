@@ -1,0 +1,115 @@
+export const meta = { title: "Task 2: Ship the Agent", minutes: 10 };
+
+The agent answers in your lab. Anyone else needs it at an address. Cloud Run runs a container from
+a folder of source, and the folder is the agent's package with three files around it. You build the
+folder and run it here, as the container will; the deploy itself is the instructor's, and you watch
+it.
+
+<Scene widget="agg-deploy">
+<Step>
+
+The deploy folder: a copy of the package, ADK's web server in `main.py`, and how to build it.
+
+```python id=folder
+import os, pathlib, shutil
+
+PACKAGE = pathlib.Path(os.environ["AGENTS_DIR"]) / "warehouse_agent"
+DEPLOY = pathlib.Path("/work/deploy/warehouse_agent")
+shutil.rmtree(DEPLOY, ignore_errors=True)
+shutil.copytree(PACKAGE, DEPLOY / "warehouse_agent", ignore=shutil.ignore_patterns("__pycache__"))
+
+(DEPLOY / "main.py").write_text('''\
+"""The service: ADK's web server over the agent folder beside this file, with its chat page."""
+import os
+
+from google.adk.cli.fast_api import get_fast_api_app
+
+app = get_fast_api_app(agents_dir=os.path.dirname(os.path.abspath(__file__)), web=True)
+''')
+(DEPLOY / "requirements.txt").write_text("google-adk==2.15.0\ngoogle-cloud-bigquery\npyyaml\nuvicorn\n")
+(DEPLOY / "Dockerfile").write_text('''\
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+''')
+print("\n".join(sorted(str(p.relative_to(DEPLOY)) for p in DEPLOY.rglob("*") if p.is_file())))
+```
+
+</Step>
+<Step>
+
+Before it is built anywhere else, run the same folder the way the container will: `uvicorn` on a
+port, with no Phoenix beside it. Then ask it one question over HTTP, as any caller would.
+
+```python id=local
+import json, subprocess, sys, time, urllib.request
+
+env = {k: v for k, v in os.environ.items() if k != "PHOENIX_COLLECTOR_ENDPOINT"}
+server = subprocess.Popen([sys.executable, "-m", "uvicorn", "main:app", "--port", "8093"], cwd=DEPLOY, env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+BASE = "http://127.0.0.1:8093"
+
+
+def call(path, body=None):
+    request = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(),
+                                     headers={"content-type": "application/json"})
+    with urllib.request.urlopen(request, timeout=120) as answer:
+        return json.loads(answer.read())
+
+
+try:
+    for _ in range(60):
+        try:
+            print("apps:", call("/list-apps"))
+            break
+        except OSError:
+            time.sleep(1)
+    session = call("/apps/warehouse_agent/users/me/sessions", {})
+    events = call("/run", {"app_name": "warehouse_agent", "user_id": "me", "session_id": session["id"],
+                           "new_message": {"role": "user", "parts": [{"text": "How many stations reported in lyft_nyc on 2026-10-01?"}]}})
+    for event in events:
+        for part in event.get("content", {}).get("parts", []):
+            if "functionCall" in part:
+                print("call:", part["functionCall"]["name"], part["functionCall"]["args"])
+            if part.get("text"):
+                print("answer:", part["text"].strip())
+finally:
+    server.terminate()
+```
+
+</Step>
+<Step>
+
+The deploy, on the projector. Your Google account may query BigQuery and call the model, but it has
+no rights on Cloud Run, so the instructor deploys and you follow. The service the room looks at is
+`agent-preview`: the shop agent of the semantic-layer pages (`shop_analyst`), in a folder of the
+same shape as yours.
+
+```sh
+ENV=GOOGLE_CLOUD_LOCATION=global
+ENV=$ENV,GEMINI_MODEL=gemini-3.5-flash-lite
+ENV=$ENV,SHOP_DATASET=enjoytech-bq-lab.shop_mart
+
+gcloud run deploy agent-preview --source /src \
+  --project enjoytech-bq-lab --region me-west1 \
+  --service-account agent-preview@enjoytech-bq-lab.iam.gserviceaccount.com \
+  --no-allow-unauthenticated --max-instances 1 --timeout 120 --quiet \
+  --set-env-vars "$ENV"
+```
+
+Cloud Build turns the folder into an image, stored in
+`me-west1-docker.pkg.dev/enjoytech-bq-lab/cloud-run-source-deploy`, and Cloud Run gives the service
+its address: `https://agent-preview-5sjqaty6ga-zf.a.run.app`. It runs in `me-west1`, Tel Aviv, as
+its own account, `agent-preview`. A first build takes a few minutes.
+
+</Step>
+<Step>
+
+`agent-preview` is private: `--no-allow-unauthenticated` turns away any request that carries no
+identity, and no account outside the project's owners may call it. Who may call it, and as whom it reads the warehouse, are questions of their own.
+
+</Step>
+</Scene>

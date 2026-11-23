@@ -1,0 +1,229 @@
+export const meta = { title: "Cost, and the Honest Comparison", minutes: 25, database: "shop", settings: {} };
+
+A server you own costs the same whether it runs one query or a thousand. A warehouse bills each
+query. So the cost of a query is decided when it is written, and it is part of the design.
+
+<Scene widget="cost-meter">
+<Step>
+
+A helper that turns a dry run's bytes into dollars, and the monthly average on the flat table,
+which reads 46.1 GB:
+
+```python
+PRICE_PER_TIB = 6.25          # BigQuery on-demand, US
+
+def dollars(gb):
+    """The on-demand price of reading this many GB (10^9 bytes, as the dry run reports them)."""
+    return gb * 1e9 / 2**40 * PRICE_PER_TIB
+
+print(f"monthly average, 46.1 GB: ${dollars(46.1):.2f}")
+```
+
+</Step>
+<Step>
+
+```python
+viewers, opens_a_day, working_days = 50, 4, 22
+runs = viewers * opens_a_day * working_days
+print(f"{runs:,} runs a month: ${runs * dollars(46.1):,.0f}")
+```
+
+</Step>
+<Step>
+
+```bigquery
+-- dry run
+SELECT num_bikes_available
+FROM `enjoytech-bq-lab.gbfs.station_status`
+LIMIT 10;
+```
+
+</Step>
+<Step>
+
+The same two queries on both meters:
+
+```python
+measured = [("monthly average", 46.1, "about 38"),
+            ("exact median", 31.7, "407-538")]
+for what, gb, slot_minutes in measured:
+    print(f"{what:16} {gb:5.1f} GB  ${dollars(gb):.2f}   {slot_minutes} slot-minutes")
+```
+
+On demand suits occasional use; steady, heavy use is usually cheaper on reserved slots.
+
+</Step>
+</Scene>
+
+Four edits bring that bill down. The tile shows the average number of bikes per
+system.
+
+<Scene widget="cost-levers">
+<Step>
+
+```bigquery
+-- dry run
+SELECT *
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`;
+```
+
+```bigquery
+-- dry run
+SELECT system_id, AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+GROUP BY system_id;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The tile's month, lever by lever, priced from the measured bytes. The summary is filled once a day
+from one partition, the same 366.5 MB as the one-day query.
+
+```python
+runs = 4_400
+for what, gb in [("SELECT *", 167.2), ("two columns", 31.7), ("one day", 0.3665),
+                 ("one day, one system", 0.0979)]:
+    print(f"{what:20} {gb:9.4f} GB a run  ${runs * dollars(gb):9,.2f} a month")
+print(f"{'summary':20} built 22 times    ${22 * dollars(0.3665):9,.2f} a month")
+```
+
+The detail table stays: a summary answers only the questions it was built for.
+
+</Step>
+</Scene>
+
+Now the honest comparison. The same 25.9 million rows sit in PostgreSQL and in a Parquet file, on
+one laptop. First the column store's ground: every row, three columns, nothing changed.
+
+<Scene widget="cost-race">
+<Step>
+
+```sql
+SET LOCAL max_parallel_workers_per_gather = 0;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available)
+FROM station_status
+GROUP BY 1, 2;
+```
+
+```duckdb
+SET threads = 1;
+EXPLAIN ANALYZE
+SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available)
+FROM 'station_status.parquet'
+GROUP BY 1, 2;
+RESET threads;
+```
+
+Run each twice: a first run may wait for the disk.
+
+</Step>
+<Step>
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available)
+FROM 'station_status.parquet'
+GROUP BY 1, 2;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+Put in your own one-thread time:
+
+```python
+laptop_core = 25_920_000 / 1.33           # rows over one core's seconds
+bq_slot = 1_803_699_574 / 2_281          # rows over 2,281 slot-seconds
+print(f"one laptop core:   {laptop_core / 1e6:5.1f} million rows a second")
+print(f"one BigQuery slot: {bq_slot / 1e6:5.2f} million rows a second")
+```
+
+</Step>
+</Scene>
+
+Then the row store's ground: one row by its key, and one changed value.
+
+<Scene widget="cost-ground">
+<Step>
+
+The index a row store keeps for this; the first cell builds it if it is not there yet.
+
+```sql id=station-index
+CREATE INDEX IF NOT EXISTS station_status_station_time
+  ON station_status (station_id, captured_at);
+```
+
+```sql needs=station-index
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT *
+FROM station_status
+WHERE station_id = 42 AND captured_at = '2026-08-01 12:00:00+00';
+```
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT *
+FROM 'station_status.parquet'
+WHERE station_id = 42 AND captured_at = TIMESTAMPTZ '2026-08-01 12:00:00+00';
+```
+
+</Step>
+<Step>
+
+In PostgreSQL, rolled back so the table stays as it was:
+
+```sql needs=station-index
+BEGIN;
+EXPLAIN (ANALYZE, BUFFERS)
+UPDATE station_status SET bikes_available = 0
+WHERE station_id = 42 AND captured_at = '2026-08-01 12:00:00+00';
+ROLLBACK;
+```
+
+In the Parquet file, the only way: write all of it again with the one value changed.
+
+```duckdb id=rewrite
+COPY (
+  SELECT * REPLACE (CASE WHEN station_id = 42 AND captured_at = TIMESTAMPTZ '2026-08-01 12:00:00+00'
+                         THEN 0 ELSE bikes_available END AS bikes_available)
+  FROM 'station_status.parquet'
+) TO 'cost_changed.parquet' (FORMAT parquet);
+```
+
+```bash needs=rewrite
+ls -l station_status.parquet cost_changed.parquet
+rm -f cost_changed.parquet
+```
+
+</Step>
+<Step>
+
+An application does those two things thousands of times a second, and needs them correct when two
+happen at once. Most organisations run both kinds of store, and copy data from the first into the
+second.
+
+</Step>
+</Scene>
+
+## Which engine for which question
+
+<Scene widget="cost-place">
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Clean up
+
+```bash
+rm -f cost_changed.parquet
+```

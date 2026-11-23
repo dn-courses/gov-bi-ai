@@ -1,0 +1,143 @@
+export const meta = { title: "Patterns Built on the Loop", minutes: 8, database: "pagila" };
+
+Agent write-ups name many architectures: planner, reflection, several agents. Each one is the loop
+you already have, with one more call placed somewhere around it. Start from a failure you have seen.
+
+<Scene widget="ag5-patterns">
+<Step>
+
+The SQL agent, as before: three tools, the loop, a turn cap.
+
+```python id=setup
+import os, psycopg
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+DB = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def run_sql(query: str) -> dict:
+    try:
+        with psycopg.connect(DB) as conn:
+            cur = conn.execute(query)
+            return {"columns": [d.name for d in cur.description], "rows": [[str(v) for v in r] for r in cur.fetchmany(50)]}
+    except psycopg.Error as e:
+        return {"error": str(e).strip()}
+
+
+TOOLS = {
+    "list_tables": lambda: run_sql("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"),
+    "describe_table": lambda table_name: run_sql("SELECT column_name, data_type FROM information_schema.columns "
+                                                 f"WHERE table_name = '{table_name.replace(chr(39), '')}'"),
+    "run_sql": run_sql,
+}
+param = lambda name: {"type": "object", "properties": {name: {"type": "string"}}, "required": [name]}
+CONFIG = types.GenerateContentConfig(
+    system_instruction="You answer questions about the Pagila DVD rental database by querying PostgreSQL with the tools. "
+                       "Look up tables before writing SQL. Answer from the results only.",
+    tools=[types.Tool(function_declarations=[
+        types.FunctionDeclaration(name="list_tables", description="List the tables in the Pagila database.",
+                                  parameters_json_schema={"type": "object", "properties": {}}),
+        types.FunctionDeclaration(name="describe_table", description="Columns and types of one table.", parameters_json_schema=param("table_name")),
+        types.FunctionDeclaration(name="run_sql", description="Run one read-only PostgreSQL SELECT; returns up to 50 rows.", parameters_json_schema=param("query"))])],
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+def ask(question, show=True):
+    history, sent, said = [types.Content(role="user", parts=[types.Part(text=question)])], [], []
+    for _ in range(8):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=CONFIG)
+        said += [p.text for p in reply.candidates[0].content.parts if p.text and not p.thought]  # text can come with a call
+        if not reply.function_calls:
+            if show: print("SQL:", *sent, sep="\n  ", end="\n\n"); print("ANSWER:", "".join(said))
+            return sent, "".join(said)
+        history.append(reply.candidates[0].content)
+        parts = []
+        for call in reply.function_calls:
+            sent += [call.args["query"]] if call.name == "run_sql" else []
+            parts.append(types.Part.from_function_response(name=call.name, response=TOOLS[call.name](**call.args)))
+        history.append(types.Content(role="user", parts=parts))
+    return sent, None
+
+
+QUESTION = "Which category has the most films, which store has more customers, and what is the longest film?"
+sent, answer = ask(QUESTION)
+```
+
+What the database says about the longest film:
+
+```sql
+SELECT title, length FROM film WHERE length = (SELECT max(length) FROM film) ORDER BY title;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## A plan, and a critique, held to a shape
+
+Both extra calls are ordinary calls with no tools, whose reply is held to a response schema, so
+your code can read it.
+
+<Scene widget="ag2-plan">
+<Step>
+
+```python
+class Plan(BaseModel):
+    parts: list[str]
+
+
+def plan(question):
+    reply = client.models.generate_content(
+        model=MODEL, contents="Split this question about the Pagila DVD rental database into the separate "
+                              "sub-questions it asks, one per part, in order. Do not answer them.\n\n" + question,
+        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=Plan))
+    return reply.parsed.parts
+
+
+parts = plan(QUESTION)
+print(parts)
+```
+
+</Step>
+<Step>
+
+```python
+checklist = "\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1))
+sent, answer = ask(f"{QUESTION}\n\nThis question has {len(parts)} parts. Answer every one, each under its own number:\n{checklist}")
+```
+
+</Step>
+<Step>
+
+```python
+class Critique(BaseModel):
+    flaws: list[str]
+
+
+def critique(question, sent, answer):
+    reply = client.models.generate_content(
+        model=MODEL, contents=f"Question: {question}\n\nSQL that ran:\n" + "\n".join(sent) + f"\n\nDraft answer:\n{answer}\n\n"
+                              "List the flaws of the draft: a part of the question not answered, a number that no query "
+                              "produced, or a result cut off by LIMIT that could hide ties. An empty list if there are none.",
+        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=Critique))
+    return reply.parsed.flaws
+
+
+sent, draft = ask(QUESTION, show=False)
+flaws = critique(QUESTION, sent, draft)
+print("FLAWS:", flaws, "\n")
+if flaws:
+    sent, answer = ask(QUESTION + "\n\nA reviewer found these flaws in an earlier answer; avoid them:\n- " + "\n- ".join(flaws))
+```
+
+</Step>
+</Scene>

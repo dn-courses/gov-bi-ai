@@ -1,0 +1,125 @@
+export const meta = { title: "What a Language Model Is", minutes: 7 };
+
+The comfortable picture is a store of facts behind an API. It predicts the wrong things.
+
+<Scene widget="ag1-tokens">
+<Step>
+</Step>
+<Step>
+
+Gemini's tokenizer, asked directly. `compute_tokens` cuts the text and returns the pieces; no reply is written.
+
+```python
+import os
+
+from google import genai
+
+client = genai.Client()  # Vertex AI: project and location come from the environment
+MODEL = os.environ["GEMINI_MODEL"]
+
+for text in ["The customer who has spent the most is", "film", "film_category", "KARL SEAL", "BUCKET BROTHERHOOD"]:
+    tokens = client.models.compute_tokens(model=MODEL, contents=text).tokens_info[0].tokens
+    print(f"{len(tokens)} tokens  {[t.decode() for t in tokens]}")
+```
+
+</Step>
+<Step>
+
+This model does not report its probabilities, so measure them: send the same text 30 times and count how each reply starts.
+
+```python
+import asyncio
+from collections import Counter
+
+from google.genai import types
+
+PROMPT = "The customer who has spent the most is"
+CONTINUE = types.GenerateContentConfig(system_instruction="Continue the user's text. Output only the continuation.")
+
+draws = await asyncio.gather(*[client.aio.models.generate_content(model=MODEL, contents=PROMPT, config=CONTINUE) for _ in range(30)])
+for word, n in Counter(d.text.split()[0] for d in draws).most_common():
+    print(f"{n:>3} of 30  {word}")
+```
+
+</Step>
+<Step>
+
+The same text ten times, with the temperature set to 0:
+
+```python
+AT_ZERO = types.GenerateContentConfig(system_instruction="Continue the user's text. Output only the continuation.", temperature=0)
+
+at_zero = await asyncio.gather(*[client.aio.models.generate_content(model=MODEL, contents=PROMPT, config=AT_ZERO) for _ in range(10)])
+print(len({d.text for d in at_zero}), "different replies out of 10")
+```
+
+</Step>
+<Step>
+
+Three of the thirty replies, in full:
+
+```python
+for d in draws[:3]:
+    print(PROMPT, d.text)
+```
+
+And the table that knows:
+
+```sql
+SELECT c.first_name || ' ' || c.last_name AS customer, sum(p.amount) AS total
+FROM customer c
+JOIN payment p USING (customer_id)
+GROUP BY c.customer_id
+ORDER BY total DESC
+LIMIT 1;
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Two places knowledge can live
+
+<Scene widget="ag1-window">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The schema as text, counted by the same model's tokenizer:
+
+```python
+import psycopg
+
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    tables = conn.execute("""
+        SELECT c.table_name, string_agg(c.column_name || ' ' || c.data_type, ', ' ORDER BY c.ordinal_position)
+        FROM information_schema.columns c
+        JOIN information_schema.tables t USING (table_schema, table_name)
+        WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE' AND c.table_name NOT LIKE 'payment_p%'
+        GROUP BY c.table_name ORDER BY c.table_name""").fetchall()
+
+schema = "\n".join(f"{name}({columns})" for name, columns in tables)
+print(schema[:190], "…")
+print(len(tables), "tables,", client.models.count_tokens(model=MODEL, contents=schema).total_tokens, "tokens")
+```
+
+</Step>
+<Step>
+
+One table, sent as text instead of described:
+
+```python
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    rows = conn.execute("SELECT rental_id, rental_date, inventory_id, customer_id, return_date, staff_id FROM rental").fetchall()
+
+as_text = "\n".join(",".join(str(value) for value in row) for row in rows)
+print(len(rows), "rows,", client.models.count_tokens(model=MODEL, contents=as_text).total_tokens, "tokens")
+```
+
+</Step>
+</Scene>
+
+The weights are not yours and do not change. The window is entirely yours, and it is a budget. Almost every technique in this part is a decision about what goes in it.

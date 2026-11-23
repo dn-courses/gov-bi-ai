@@ -1,0 +1,144 @@
+export const meta = { title: "Caching the Start", minutes: 12, database: "pagila" };
+
+The start of every request is the same: the instructions, the tools, often the schema. Gemini can
+bill those tokens at a tenth of the price when it has seen them recently. Whether it does depends
+on where your code puts the parts that change.
+
+<Scene widget="agc-cache">
+<Step>
+
+The SQL agent with Pagila's tables in its system prompt, each with five sample rows, and `run_sql`
+as its one tool. The first line is yours alone, so you do not share a cache entry with the room:
+
+```python id=setup
+import json, os, uuid
+import psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def run_sql(query):
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            return json.dumps({"columns": [c.name for c in cur.description],
+                               "rows": [[None if v is None else str(v) for v in r] for r in cur.fetchmany(50)]})
+    except psycopg.Error as e:
+        return json.dumps({"error": type(e).__name__, "message": str(e).strip()})
+
+
+def describe(table, samples=5):
+    """One table for the prompt: its columns, then a few rows with every value cut to 30 characters."""
+    rows = json.loads(run_sql(f"SELECT * FROM {table} LIMIT {samples}"))
+    lines = [" | ".join(str(v)[:30] for v in row) for row in rows["rows"]]
+    return f"## {table}\n" + " | ".join(rows["columns"]) + "\n" + "\n".join(lines)
+
+
+TABLES = ["actor", "address", "category", "city", "country", "customer", "film", "film_actor", "film_category",
+          "inventory", "language", "payment", "rental", "staff", "store"]
+HEAD = (f"Session group {uuid.uuid4().hex[:8]}.\n"   # yours alone, so the room does not share one cache entry
+        "You answer questions about the Pagila film-rental database with run_sql. Names are stored in capitals. "
+        "Revenue is the sum of payment.amount.\n\n# Tables, each with sample rows\n\n"
+        + "\n\n".join(describe(t) for t in TABLES))
+RUN_SQL = types.FunctionDeclaration(name="run_sql", description="Run one read-only PostgreSQL SELECT; up to 50 rows come back.",
+    parameters_json_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+TOOLS = [types.Tool(function_declarations=[RUN_SQL])]
+
+print(client.models.count_tokens(model=MODEL, contents=HEAD).total_tokens, "tokens in the head")
+print(HEAD[:600])
+```
+
+</Step>
+<Step>
+
+Three questions, nothing set up. The loop prints every request's input and the part that came from
+a cache:
+
+```python
+import time
+
+OFF = types.AutomaticFunctionCallingConfig(disable=True)
+PLAIN = types.GenerateContentConfig(system_instruction=HEAD, tools=TOOLS, automatic_function_calling=OFF)
+
+
+def agent(question, config=PLAIN):
+    """The loop with run_sql. Prints, for every request, what was sent and how much of it came from a cache."""
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for n in range(1, 8):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=config)
+        u = reply.usage_metadata
+        print(f"request {n}: {u.prompt_token_count:>5} tokens in, {u.cached_content_token_count or 0:>5} of them cached")
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            return reply.text
+        history.append(types.Content(role="user", parts=[types.Part.from_function_response(
+            name=c.name, response={"result": run_sql(c.args.get("query", ""))}) for c in reply.function_calls]))
+
+
+for question in ["How many films are rated PG-13?", "Which customer has paid the most in total?",
+                 "How many rentals were never returned?"]:
+    print(question, "→", agent(question), "\n")
+    time.sleep(2)
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+The same questions through an explicit cache. The cell deletes the cache when it is done:
+
+```python
+cache = client.caches.create(model=MODEL, config=types.CreateCachedContentConfig(
+    system_instruction=HEAD, tools=TOOLS, ttl="600s", display_name="agents-22-prompt-caching"))
+try:
+    print("cached once:", cache.usage_metadata.total_token_count, "tokens, kept for 10 minutes\n")
+    CACHED = types.GenerateContentConfig(cached_content=cache.name, automatic_function_calling=OFF)
+    for question in ["How many films are rated PG-13?", "Which customer has paid the most in total?"]:
+        print(question, "→", agent(question, CACHED), "\n")
+finally:
+    client.caches.delete(name=cache.name)
+```
+
+</Step>
+<Step>
+
+```python expect=error
+cache = client.caches.create(model=MODEL, config=types.CreateCachedContentConfig(
+    system_instruction=HEAD, tools=TOOLS, ttl="300s", display_name="agents-22-prompt-caching"))
+try:
+    stamped = f"Today is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n" + HEAD
+    client.models.generate_content(model=MODEL, contents="How many films are rated PG-13?", config=types.GenerateContentConfig(
+        cached_content=cache.name, system_instruction=stamped, automatic_function_calling=OFF))
+finally:
+    client.caches.delete(name=cache.name)
+```
+
+</Step>
+<Step>
+
+```python
+# USD per 1M tokens, gemini-3.5-flash-lite on Vertex AI, global endpoint, standard tier. Checked 2026-11-23.
+FRESH, CACHED_READ, STORAGE_PER_HOUR = 0.30, 0.03, 1.00
+head = client.models.count_tokens(model=MODEL, contents=HEAD).total_tokens
+
+saved = head * (FRESH - CACHED_READ) / 1e6      # on every request that reads the cached start
+kept = head * STORAGE_PER_HOUR / 1e6            # for every hour an explicit cache is kept
+print(f"the start: {head:,} tokens")
+print(f"each request that reads it from the cache saves ${saved:.5f}")
+print(f"keeping it cached costs ${kept:.5f} an hour")
+print(f"an explicit cache pays for itself from {kept / saved:.1f} requests an hour")
+print(f"a class of 14, each asking 20 questions of 3 requests an hour: ${14 * 20 * 3 * saved:.2f} saved an hour")
+```
+
+</Step>
+</Scene>
+
+Keep the start of the prompt byte for byte the same, and put whatever changes after it. Log
+`cached_content_token_count` beside every request, so a change that breaks the match shows up as a
+zero. Create an explicit cache when the start is long and requests come often; otherwise implicit
+caching may still save something, with no promise.

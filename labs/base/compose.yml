@@ -1,0 +1,48 @@
+# Base lab: workspace container only.
+# Provides MyST docs server (port 3000) and Jupyter server (port 8888).
+# All lab files are layered on top of this via docker compose -f merging.
+#
+# Usage: just docs            (standalone)
+# Usage: just lab <name>      (merged with labs/<name>/compose.yml)
+
+services:
+  workspace:
+    # No fixed container_name: the name derives from COMPOSE_PROJECT_NAME so multiple courses (and
+    # the runtime test suite) bring up isolated stacks without colliding on a global name. Tooling
+    # addresses this by compose *service* name (`workspace`), never the container name.
+    build:
+      context: ../..
+      dockerfile: labs/base/Dockerfile
+      args:
+        LAB: base
+    volumes:
+      - ../..:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    # Host ports are overridable via env vars (export MYST_PORT/MYST_SERVER_PORT/JUPYTER_PORT before
+    # `just docs`) so a second course stack can run alongside another that already holds 3000/3100/8888.
+    # Container-internal ports are fixed (myst --port 3000 --server-port 3100, jupyter :8888); only the
+    # host mapping moves. Pair with a per-course COMPOSE_PROJECT_NAME (set in the generated justfile) so
+    # the two stacks are also distinct projects and `--remove-orphans` can't tear the other one down.
+    ports:
+      - "${MYST_PORT:-3000}:3000"
+      - "${MYST_SERVER_PORT:-3100}:3100"
+      - "${JUPYTER_PORT:-8888}:8888"
+    environment:
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-}
+      # Exercise stubs run in the workspace, in the gitignored /workspace/hands-on/. They need a
+      # provider key and nothing else — no lab, no database — but nothing forwarded one, so a
+      # stub could not reach a key without booting a data lab purely for its environment block.
+      #
+      # Bare passthrough (`- VAR`, no `=`) rather than `${VAR:-}`, and the difference is not
+      # cosmetic: bare reads .env and forwards the value when set, but omits the variable ENTIRELY
+      # when unset, whereas the defaulted form injects an empty string. Tools branch on absent very
+      # differently from empty.
+      #
+      # Deliberately NOT here: ANTHROPIC_API_KEY. Claude Code authenticates by interactive login
+      # inside the container, against the student's own subscription — a key would both be unused
+      # and risk pre-empting that login.
+      - OPENAI_API_KEY
+      - OPENAI_MODEL
+    command: ["bash", "labs/base/init.sh"]
+    restart: unless-stopped

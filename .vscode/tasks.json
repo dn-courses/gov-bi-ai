@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Docs",
+      "type": "shell",
+      "command": "just docs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Start agents lab",
+      "type": "shell",
+      "command": "just lab agents",
+      "problemMatcher": []
+    },
+    {
+      "label": "Start postgres lab",
+      "type": "shell",
+      "command": "just lab postgres",
+      "problemMatcher": []
+    },
+    {
+      "label": "Check Exercise",
+      "type": "shell",
+      "command": "just check",
+      "problemMatcher": []
+    }
+  ]
+}

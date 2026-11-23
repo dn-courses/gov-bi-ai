@@ -1,0 +1,233 @@
+export const meta = { title: "Embeddings and Vector Search", minutes: 15, database: "pagila" };
+
+"What does a week's late return cost?" has no table to query: the answer is a sentence in a policy
+document. To find that sentence by meaning, text is turned into numbers.
+
+<Scene widget="ag4-embed">
+<Step>
+
+An embedding model takes text and returns a fixed-length list of floats:
+
+```python id=setup
+import os
+import numpy as np
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+EMBEDDING_MODEL = "gemini-embedding-001"
+DIMS = 1536                     # the size of the lab's docs.embedding column
+
+
+def embed(texts, task="RETRIEVAL_DOCUMENT"):
+    """One request for a list of texts; one vector per text, in order."""
+    reply = client.models.embed_content(
+        model=EMBEDDING_MODEL, contents=texts,
+        config=types.EmbedContentConfig(output_dimensionality=DIMS, task_type=task))
+    return np.array([e.values for e in reply.embeddings])
+
+
+vec = embed(["A short sentence about cats."])[0]
+print("dimensions:", len(vec))
+print("first 6:   ", [round(float(v), 4) for v in vec[:6]])
+```
+
+</Step>
+<Step>
+
+```python
+def cosine(a, b):
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+cats_1, cats_2, pg = embed(["Cats are small carnivorous mammals often kept as pets.",
+                            "The domestic cat is a popular companion animal.",
+                            "PostgreSQL is an open-source relational database."])
+angle = lambda c: np.degrees(np.arccos(c))
+print(f"cats 1 · cats 2    cosine {cosine(cats_1, cats_2):.3f}   angle {angle(cosine(cats_1, cats_2)):.0f}°")
+```
+
+</Step>
+<Step>
+
+```python
+print(f"cats 1 · postgres  cosine {cosine(cats_1, pg):.3f}   angle {angle(cosine(cats_1, pg)):.0f}°")
+```
+
+</Step>
+<Step>
+
+```python
+print("lengths:        ", [round(float(np.linalg.norm(v)), 3) for v in (cats_1, cats_2, pg)])
+print("dot, raw:       ", round(float(np.dot(cats_1, cats_2)), 3))
+unit = lambda v: v / np.linalg.norm(v)
+print("dot, normalised:", round(float(np.dot(unit(cats_1), unit(cats_2))), 3), "= the cosine")
+```
+
+</Step>
+<Step>
+
+What the six documents cost, as the reply counts them:
+
+```python
+import psycopg
+
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    docs = conn.execute("SELECT title, body FROM docs ORDER BY id").fetchall()
+
+reply = client.models.embed_content(model=EMBEDDING_MODEL, contents=[body for _, body in docs],
+                                    config=types.EmbedContentConfig(output_dimensionality=DIMS))
+tokens = sum(e.statistics.token_count for e in reply.embeddings)
+print(f"the six docs: {tokens:.0f} tokens = ${tokens / 1e6 * 0.15:.6f} at $0.15 per million")
+```
+
+</Step>
+</Scene>
+
+## Search in Postgres
+
+With the `pgvector` extension, the database you already run stores the vectors, and retrieval is a
+column, an operator and an `ORDER BY`. The search then becomes one more tool for the SQL agent.
+
+<Scene widget="ag4-retrieve">
+<Step>
+
+Six short policy documents, and a `vector(1536)` column the next step fills:
+
+```sql
+SELECT id, title, left(body, 50) AS body, embedding IS NULL AS no_vector FROM docs ORDER BY id;
+```
+
+</Step>
+<Step>
+
+```python id=store
+import json
+from pgvector.psycopg import register_vector
+
+MODEL = os.environ["GEMINI_MODEL"]
+DB = os.environ["DATABASE_URL"]
+
+
+def embed(texts, task):
+    reply = client.models.embed_content(model=EMBEDDING_MODEL, contents=texts,
+                                        config=types.EmbedContentConfig(output_dimensionality=DIMS, task_type=task))
+    vectors = np.array([e.values for e in reply.embeddings], dtype=np.float32)
+    return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)      # length 1
+
+
+with psycopg.connect(DB) as conn:
+    register_vector(conn)                       # teaches psycopg the vector type
+    rows = conn.execute("SELECT id, body FROM docs ORDER BY id").fetchall()
+    for (doc_id, _), vector in zip(rows, embed([body for _, body in rows], "RETRIEVAL_DOCUMENT")):
+        conn.execute("UPDATE docs SET embedding = %s WHERE id = %s", (vector, doc_id))
+print(len(rows), "documents embedded")
+```
+
+```sql
+SELECT id, title, vector_dims(embedding) AS dims, round(vector_norm(embedding)::numeric, 3) AS length,
+       left(embedding::text, 40) AS starts
+FROM docs ORDER BY id;
+```
+
+</Step>
+<Step>
+
+pgvector adds distance operators. On small vectors you can check by eye:
+
+```sql
+SELECT '[1,0]'::vector <=> '[1,0]'  AS same_direction,
+       '[1,0]'::vector <=> '[5,0]'  AS same_direction_longer,
+       '[1,0]'::vector <=> '[0,1]'  AS right_angle,
+       '[1,0]'::vector <=> '[-1,0]' AS opposite;
+```
+
+</Step>
+<Step>
+
+```python
+def search_docs(query, k=3):
+    with psycopg.connect(DB) as conn:
+        register_vector(conn)
+        return conn.execute("""SELECT title, body, embedding <=> %(q)s AS distance
+                               FROM docs ORDER BY embedding <=> %(q)s LIMIT %(k)s""",
+                            {"q": embed([query], "RETRIEVAL_QUERY")[0], "k": k}).fetchall()
+
+
+for title, body, distance in search_docs("If I return a movie a week late, what does it cost me?"):
+    print(f"{distance:.3f}  {title}")
+```
+
+</Step>
+<Step>
+
+The search as a tool, and the loop that uses it:
+
+```python
+SEARCH = types.FunctionDeclaration(
+    name="search_policies",
+    description=("Search the company's policy documents (fees, refunds, opening hours, membership). "
+                 "Use for questions about rules and policy, not for data about films, customers or rentals. "
+                 "Returns the 3 closest passages."),
+    parameters_json_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+
+def search_policies(query):
+    return {"passages": [{"title": t, "text": b, "distance": round(float(d), 3)} for t, b, d in search_docs(query)]}
+
+
+def ask(question, declarations, functions, system):
+    config = types.GenerateContentConfig(
+        system_instruction=system, tools=[types.Tool(function_declarations=declarations)],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for _ in range(6):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=config)
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            print("ANSWER:", reply.text)
+            return
+        parts = []
+        for call in reply.function_calls:
+            result = functions[call.name](**call.args)
+            print(f"CALL  : {call.name}({dict(call.args)})\n   ->   {json.dumps(result)[:150]}")
+            parts.append(types.Part.from_function_response(name=call.name, response=result))
+        history.append(types.Content(role="user", parts=parts))
+
+
+ask("How much am I charged if I return a movie 3 days late?", [SEARCH], {"search_policies": search_policies},
+    "You are a support assistant for Pagila Video. Answer policy questions from the policy documents "
+    "and quote the passage you used.")
+```
+
+</Step>
+<Step>
+
+Give the agent both kinds of tool. It chooses by reading the descriptions:
+
+```python
+AGENT_URL = DB.replace("postgres:postgres@", "agent_ro:agent_ro@")
+RUN_SQL = types.FunctionDeclaration(
+    name="run_sql",
+    description="Run one PostgreSQL SELECT on the Pagila rental database (film, customer, rental, payment…). Use for questions about data.",
+    parameters_json_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+
+def run_sql(query):
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            return {"columns": [d.name for d in cur.description], "rows": [[str(v) for v in r] for r in cur.fetchmany(20)]}
+    except psycopg.Error as e:
+        return {"error": str(e).strip()}
+
+
+BOTH = ([SEARCH, RUN_SQL], {"search_policies": search_policies, "run_sql": run_sql},
+        "You are an assistant for Pagila Video. Use the tools; do not answer from memory.")
+ask("What are your opening hours on Sunday?", *BOTH)
+print()
+ask("How many films are in the catalogue?", *BOTH)
+```
+
+</Step>
+</Scene>

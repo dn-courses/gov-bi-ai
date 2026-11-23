@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(just:*)",
+      "Bash(docker compose:*)",
+      "Bash(psql:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(uv:*)"
+    ]
+  }
+}

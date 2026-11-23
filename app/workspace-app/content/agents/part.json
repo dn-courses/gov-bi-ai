@@ -1,0 +1,70 @@
+{
+  "title": "AI Agents",
+  "groups": [
+    {
+      "title": "The model and the loop",
+      "lessons": [
+        "00-what-is-an-llm",
+        "01-llm-as-api",
+        "02-from-completion-to-agent",
+        "03-what-were-building",
+        "04-the-loop-in-code"
+      ]
+    },
+    {
+      "title": "Tools and answers",
+      "lessons": [
+        "06-designing-tools",
+        "06b-tools-on-the-database",
+        "07-structured-outputs",
+        "08-seeing-why-it-chose"
+      ]
+    },
+    {
+      "title": "The SQL agent",
+      "lessons": [
+        "16-system-prompt-for-sql",
+        "17-end-to-end-walkthrough",
+        "19-hands-on-the-data-agent"
+      ]
+    },
+    {
+      "title": "Safe by design",
+      "lessons": [
+        "19b-why-free-sql-is-not-production",
+        "25-guards"
+      ]
+    },
+    {
+      "title": "Protocols, cost and a framework",
+      "lessons": [
+        "12-what-is-mcp",
+        "20-conversation-history",
+        "22-prompt-caching",
+        "29-adk"
+      ]
+    },
+    {
+      "title": "Task 2 and evals",
+      "lessons": [
+        "30a-task-2-the-warehouse-agent",
+        "30b-task-2-deploy-the-agent",
+        "30-evals-and-observability"
+      ]
+    },
+    {
+      "title": "Production and patterns",
+      "lessons": [
+        "31b-from-proof-of-concept-to-production",
+        "28-patterns"
+      ]
+    },
+    {
+      "title": "Bonus",
+      "lessons": [
+        "26-embeddings",
+        "35-a-team-of-agents"
+      ]
+    }
+  ]
+}

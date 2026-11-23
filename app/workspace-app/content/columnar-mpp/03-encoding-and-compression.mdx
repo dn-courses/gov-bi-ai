@@ -1,0 +1,162 @@
+export const meta = { title: "Encoding and Compression", minutes: 20, database: "shop", settings: {} };
+
+A column store reads only the columns a query names. Each of those columns is still millions of
+values, and most of them say the same thing over and over.
+
+<Scene widget="enc-column">
+<Step>
+
+```duckdb
+SELECT count(*)                        AS name_values,
+       round(sum(strlen(name)) / 1e6)  AS written_out_mb,
+       count(DISTINCT name)            AS distinct_names
+FROM 'station_status.parquet';
+```
+
+</Step>
+<Step>
+
+```duckdb
+SELECT (SELECT round(sum(strlen(name)) / 1e3, 1)
+        FROM (SELECT DISTINCT name FROM 'station_status.parquet'))      AS dictionary_kb,
+       ceil(log2(count(DISTINCT name)))                                 AS bits_per_code,
+       round(count(*) * ceil(log2(count(DISTINCT name))) / 8 / 1e6, 1) AS codes_mb
+FROM 'station_status.parquet';
+```
+
+</Step>
+<Step>
+
+A run ends wherever a value differs from the one before it. Count the runs in station order:
+
+```duckdb
+SELECT count(*) FILTER (WHERE name IS DISTINCT FROM before) AS runs, count(*) AS values
+FROM (SELECT name, lag(name) OVER (ORDER BY station_id, captured_at) AS before
+      FROM 'station_status.parquet');
+```
+
+</Step>
+<Step>
+
+The same count, in the order the polls arrive:
+
+```duckdb
+SELECT count(*) FILTER (WHERE name IS DISTINCT FROM before) AS runs, count(*) AS values
+FROM (SELECT name, lag(name) OVER (ORDER BY captured_at, station_id) AS before
+      FROM 'station_status.parquet');
+```
+
+Write the `name` column alone, once in each order, encoded and not compressed:
+
+```duckdb
+COPY (SELECT name FROM 'station_status.parquet' ORDER BY captured_at, station_id)
+  TO 'enc_name_by_time.parquet' (FORMAT parquet, COMPRESSION uncompressed);
+COPY (SELECT name FROM 'station_status.parquet' ORDER BY station_id, captured_at)
+  TO 'enc_name_by_station.parquet' (FORMAT parquet, COMPRESSION uncompressed);
+
+SELECT file_name, any_value(encodings) AS encoding,
+       round(sum(total_uncompressed_size) / 1e6, 1) AS encoded_mb
+FROM parquet_metadata(['enc_name_by_time.parquet', 'enc_name_by_station.parquet'])
+GROUP BY ALL ORDER BY encoded_mb DESC;
+```
+
+</Step>
+<Step>
+
+```python
+import os, zlib
+
+repeating = b"NYC,JC,BOS,CHI,DC,SF," * 1000
+noise = os.urandom(len(repeating))
+
+for name, data in [("repeating text", repeating), ("random bytes", noise)]:
+    print(f"{name:15} {len(data):>6,} bytes -> {len(zlib.compress(data)):>6,} compressed")
+```
+
+</Step>
+</Scene>
+
+A Parquet file records, for every column, the encoding it used and its size before and after
+compression. DuckDB reads that record with `parquet_metadata`.
+
+<Scene widget="enc-file">
+<Step>
+
+```duckdb
+SELECT path_in_schema AS column_name, any_value(encodings) AS encoding,
+       round(sum(total_uncompressed_size) / 1e6, 1) AS encoded_mb
+FROM parquet_metadata('station_status.parquet')
+GROUP BY ALL ORDER BY encoded_mb DESC;
+```
+
+</Step>
+<Step>
+
+`station_status.parquet` was written with the defaults: the older format version, compressed.
+Write the same rows three more ways:
+
+```duckdb id=writes
+COPY (SELECT * FROM 'station_status.parquet')
+  TO 'enc_uncompressed.parquet' (FORMAT parquet, COMPRESSION uncompressed);
+COPY (SELECT * FROM 'station_status.parquet')
+  TO 'enc_v2_uncompressed.parquet' (FORMAT parquet, PARQUET_VERSION v2, COMPRESSION uncompressed);
+COPY (SELECT * FROM 'station_status.parquet')
+  TO 'enc_v2.parquet' (FORMAT parquet, PARQUET_VERSION v2);
+
+SELECT file_name, any_value(compression) AS compression,
+       round(sum(total_uncompressed_size) / 1e6, 1) AS encoded_mb,
+       round(sum(total_compressed_size) / 1e6, 1) AS on_disk_mb
+FROM parquet_metadata(['enc_uncompressed.parquet', 'station_status.parquet',
+                       'enc_v2_uncompressed.parquet', 'enc_v2.parquet'])
+GROUP BY ALL ORDER BY encoded_mb DESC, on_disk_mb DESC;
+```
+
+```bash
+ls -l station_status.parquet enc_*.parquet
+```
+
+</Step>
+<Step>
+
+```python needs=writes
+import duckdb, time
+
+QUERY = "SELECT count(DISTINCT captured_at), sum(docks_available) FROM '{}'"
+READ = """SELECT round(sum(total_compressed_size) / 1e6, 1) FROM parquet_metadata('{}')
+          WHERE path_in_schema IN ('captured_at', 'docks_available')"""
+FILES = ["enc_uncompressed.parquet", "station_status.parquet",
+         "enc_v2_uncompressed.parquet", "enc_v2.parquet"]
+
+def best(con, file, runs):
+    times = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        con.sql(QUERY.format(file)).fetchall()
+        times.append(time.perf_counter() - start)
+    return min(times) * 1000
+
+con = duckdb.connect()
+for file in FILES:
+    read_mb = con.sql(READ.format(file)).fetchall()[0][0]
+    print(f"{file:28} reads {read_mb:6.1f} MB   best of 5: {best(con, file, 5):5.1f} ms")
+```
+
+</Step>
+<Step>
+
+On one core the cost of undoing the squeeze is not shared out, so it shows in full:
+
+```python
+con.sql("SET threads = 1")
+for file in FILES:
+    print(f"{file:28} one core, best of 3: {best(con, file, 3):6.1f} ms")
+```
+
+</Step>
+</Scene>
+
+## Clean up
+
+```bash
+rm -f enc_*.parquet
+```

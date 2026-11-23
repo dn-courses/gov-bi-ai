@@ -1,0 +1,293 @@
+export const meta = { title: "Tools on the Database", minutes: 13, database: "pagila" };
+
+An agent over Pagila needs a login, three tools to look at the data, and one to show it. Each
+tool below is a plain Python function, tried here before any model sees it.
+
+<Scene widget="agb-role">
+<Step>
+
+The lab already has the role. The statements are safe to run again:
+
+```sql
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_ro') THEN
+        CREATE ROLE agent_ro LOGIN PASSWORD 'agent_ro';
+    END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE pagila TO agent_ro;
+GRANT USAGE ON SCHEMA public TO agent_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_ro;
+```
+
+```sql
+SELECT grantee, privilege_type, count(*) AS tables
+FROM information_schema.role_table_grants
+WHERE grantee = 'agent_ro'
+GROUP BY grantee, privilege_type;
+```
+
+</Step>
+<Step>
+
+Log in as `agent_ro` and try a read and three changes:
+
+```python id=setup
+import json, os
+
+import psycopg
+
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def as_agent(sql):
+    """Run one statement as agent_ro and say what PostgreSQL answered."""
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            return conn.execute(sql).fetchone()
+    except psycopg.Error as e:
+        return f"{type(e).__name__}: {str(e).splitlines()[0]}"
+
+
+for sql in ["SELECT count(*) FROM film",
+            "INSERT INTO film (title, language_id) VALUES ('X', 1)",
+            "DELETE FROM payment",
+            "DROP TABLE film"]:
+    print(f"{sql:<54} -> {as_agent(sql)}")
+```
+
+</Step>
+</Scene>
+
+## Three tools to look at the data
+
+<Scene widget="agb-sqltools">
+<Step>
+</Step>
+<Step>
+
+```python
+def list_tables():
+    """The base tables of the public schema, without payment's monthly partitions."""
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+              AND table_name NOT LIKE 'payment_p%'
+            ORDER BY table_name""").fetchall()
+    return {"tables": [name for (name,) in rows]}
+
+
+print(list_tables())
+```
+
+What it leaves out:
+
+```sql
+SELECT table_type, count(*) AS relations,
+       count(*) FILTER (WHERE table_name LIKE 'payment_p%') AS payment_partitions
+FROM information_schema.tables
+WHERE table_schema = 'public'
+GROUP BY table_type;
+```
+
+</Step>
+<Step>
+
+```python
+def describe_table(table_name):
+    """The columns of one table, in order: name, type, nullable."""
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""
+            SELECT column_name, data_type, is_nullable FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position""", (table_name,)).fetchall()
+    if not rows:
+        return {"error": f"no such table: {table_name}", "hint": "call list_tables to see the table names"}
+    return {"table": table_name, "columns": [[name, kind, nullable == "YES"] for name, kind, nullable in rows]}
+
+
+print(describe_table("film"))
+print(describe_table("movies"))
+```
+
+</Step>
+<Step>
+
+```python
+MAX_ROWS = 50
+
+
+def run_sql(query):
+    """Run one statement as agent_ro; at most MAX_ROWS rows come back, every value as text."""
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            if cur.description is None:
+                return {"error": "the statement returned no rows", "hint": "send one SELECT"}
+            rows = cur.fetchmany(MAX_ROWS)
+            return {"columns": [c.name for c in cur.description],
+                    "rows": [[None if v is None else str(v) for v in row] for row in rows],
+                    "truncated": cur.fetchone() is not None}
+    except psycopg.Error as e:
+        return {"error": str(e).strip(), "hint": "fix the SQL and try again; check names with list_tables and describe_table"}
+
+
+print(run_sql("SELECT count(*) AS rentals FROM rental"))
+```
+
+Every value becomes text, because `json` cannot write a `Decimal` or a timestamp. The ceiling,
+counted by Gemini's own tokenizer:
+
+```python
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+
+capped = json.dumps(run_sql("SELECT * FROM rental"))
+print(f"first 50 rows  {client.models.count_tokens(model=MODEL, contents=capped).total_tokens:,} tokens")
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+The declarations, and the table the loop looks each function up in:
+
+```python
+def string(description):
+    return {"type": "string", "description": description}
+
+
+def declare(name, description, required=(), **properties):
+    return types.FunctionDeclaration(name=name, description=description, parameters_json_schema={
+        "type": "object", "properties": properties, "required": list(required)})
+
+
+TOOLS = [
+    declare("list_tables", "List the tables of the Pagila film-rental database. Takes no arguments."),
+    declare("describe_table", "Get the columns of one table, with their types. Call it before writing SQL that uses the table.",
+            ["table_name"], table_name=string("Exact table name, as list_tables returns it.")),
+    declare("run_sql", "Run one read-only PostgreSQL SELECT and return up to 50 rows. On failure returns error and hint.",
+            ["query"], query=string("One PostgreSQL SELECT statement.")),
+]
+FUNCTIONS = {"list_tables": list_tables, "describe_table": describe_table, "run_sql": run_sql}
+
+
+def configure():
+    return types.GenerateContentConfig(tools=[types.Tool(function_declarations=TOOLS)],
+                                       automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+CONFIG = configure()
+```
+
+Which tool the model asks for first, one call per question:
+
+```python
+for q in ["What tables are there?", "What columns does the payment table have?", "How many films are rated PG?"]:
+    reply = client.models.generate_content(model=MODEL, contents=q, config=CONFIG)
+    call = reply.function_calls[0] if reply.function_calls else None
+    print(f"{q:<44} -> {call.name + json.dumps(call.args) if call else reply.text}")
+```
+
+</Step>
+</Scene>
+
+## A tool that shows the answer
+
+<Scene widget="agb-chart">
+<Step>
+
+The loop, and a question that asks for a picture. No tool can draw yet:
+
+```python
+def ask(question, cap=8):
+    """The loop over TOOLS. Prints each call and the start of its result; returns the answer."""
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for _ in range(cap):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=CONFIG)
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            return reply.text
+        parts = []
+        for call in reply.function_calls:
+            result = FUNCTIONS[call.name](**call.args)
+            print(f"{call.name}({json.dumps(call.args)[:110]})\n   -> {json.dumps(result)[:110]}")
+            parts.append(types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response=result)))
+        history.append(types.Content(role="user", parts=parts))
+    return "(stopped at the turn cap)"
+
+
+print("ANSWER:", ask("Show the revenue of each film category as a chart."))
+```
+
+</Step>
+<Step>
+
+The chart tool runs the query itself and keeps the result for your code to draw. The model gets a
+receipt, not the picture:
+
+```python
+CHARTS = []
+
+
+def make_chart(sql, kind, x, y, title):
+    """Run the query, keep the chart for your code to draw; the model gets a short receipt."""
+    result = run_sql(sql)
+    if "error" in result:
+        return result
+    columns = result["columns"]
+    if x not in columns or y not in columns:
+        return {"error": f"x and y must be columns of the result: {columns}", "hint": "name them as the SELECT does"}
+    try:
+        points = [[row[columns.index(x)], float(row[columns.index(y)])] for row in result["rows"]]
+    except (TypeError, ValueError):
+        return {"error": f"{y} is not a number in every row", "hint": "y must be a numeric column"}
+    CHARTS.append({"kind": kind, "title": title, "x": x, "y": y, "points": points})
+    return {"chart": len(CHARTS), "drawn": f"a {kind} chart of {len(points)} points", "truncated": result["truncated"]}
+
+
+TOOLS.append(declare("make_chart",
+    "Draw the rows of one SELECT as a chart the person sees. Use it when the person asks for a chart, or when the answer is many numbers to compare.",
+    ["sql", "kind", "x", "y", "title"],
+    sql=string("One PostgreSQL SELECT returning a label column and a number column."),
+    kind={"type": "string", "enum": ["bar", "line"], "description": "bar to compare categories, line for a trend over time."},
+    x=string("The label column, as the SELECT names it."), y=string("The number column, as the SELECT names it."),
+    title=string("A short title for the chart.")))
+FUNCTIONS["make_chart"] = make_chart
+CONFIG = configure()
+```
+
+</Step>
+<Step>
+
+```python
+print("ANSWER:", ask("Show the revenue of each film category as a chart."))
+print(json.dumps({k: v for k, v in CHARTS[-1].items() if k != "points"}), len(CHARTS[-1]["points"]), "points")
+```
+
+</Step>
+<Step>
+
+A cell prints text, so here the drawing is text too; an app hands the same points to its charting
+library.
+
+```python
+def show(chart, width=36):
+    """The chart as text: one bar of blocks per point."""
+    top = max(value for _, value in chart["points"])
+    print(chart["title"])
+    for label, value in chart["points"]:
+        print(f"{label:>12}  {'█' * round(width * value / top):<{width}}  {value:,.2f}")
+
+
+show(CHARTS[-1])
+```
+
+</Step>
+</Scene>

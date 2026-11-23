@@ -1,0 +1,6 @@
+# What the app's own cells import: `duckdb` cells, `bigquery` cells, and Postgres from Python.
+# A course's labs add theirs in requirements-labs.txt, which the build writes.
+duckdb==2.0.0
+pyarrow==26.0.1
+google-cloud-bigquery==3.47.0
+psycopg[binary]>=3.2

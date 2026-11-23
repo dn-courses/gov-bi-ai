@@ -1,0 +1,257 @@
+export const meta = { title: "Partitioning", minutes: 30, database: "shop", settings: {} };
+
+Sorted by time, the file answers one day from 3 of its 211 row groups. But a file has one order:
+the question about one station got worse. And every new day means rewriting the whole sorted file.
+A table that grows by the day, and is asked by the period, needs another cut.
+
+<Scene widget="pt-folders">
+<Step>
+
+Write the same rows again, one folder per day. It takes a few seconds.
+
+```duckdb id=by-day
+COPY (SELECT *, captured_at::DATE AS day FROM 'station_status.parquet')
+  TO 'partitioning_by_day' (FORMAT parquet, PARTITION_BY (day), OVERWRITE_OR_IGNORE);
+```
+
+```bash needs=by-day
+ls partitioning_by_day | head -n 3
+ls partitioning_by_day | wc -l
+ls partitioning_by_day/day=2026-08-01
+du -sb partitioning_by_day
+```
+
+</Step>
+<Step>
+
+The same day, asked of the folders. Find `File Filters` and `Scanning Files`.
+
+```duckdb needs=by-day
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_by_day/*/*.parquet', hive_partitioning = true)
+WHERE day = DATE '2026-08-01';
+```
+
+</Step>
+<Step>
+
+The same day once more, with the filter on `captured_at`. Find `Total Files Read` and
+`Row Groups Scanned`.
+
+```duckdb needs=by-day
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_by_day/*/*.parquet', hive_partitioning = true)
+WHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00' AND captured_at < TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
+
+</Step>
+</Scene>
+
+A warehouse does the same with its own storage.
+
+<Scene widget="pt-bq">
+<Step>
+
+`station_status_partitioned` holds the same rows, created with `PARTITION BY DATE(captured_at)`.
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
+```
+
+</Step>
+<Step>
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`;
+```
+
+</Step>
+<Step>
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-10-01';
+```
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE EXTRACT(MONTH FROM captured_at) = 9;
+```
+
+Which expressions an engine sees through differs from engine to engine. Do not memorise a list:
+read the plan or the dry run.
+
+</Step>
+</Scene>
+
+## How coarse to cut
+
+<Scene widget="pt-cut">
+<Step>
+
+The same rows, one folder per month, and one day asked of it.
+
+```duckdb id=by-month
+COPY (SELECT *, date_trunc('month', captured_at)::DATE AS month FROM 'station_status.parquet')
+  TO 'partitioning_by_month' (FORMAT parquet, PARTITION_BY (month), OVERWRITE_OR_IGNORE);
+```
+
+```duckdb needs=by-month
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_by_month/*/*.parquet', hive_partitioning = true)
+WHERE month = DATE '2026-08-01'
+  AND captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00' AND captured_at < TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+Ten days, cut by day and by station:
+
+```duckdb id=too-fine
+COPY (SELECT *, captured_at::DATE AS day FROM 'station_status.parquet'
+      WHERE captured_at < TIMESTAMPTZ '2026-07-11 00:00:00+00')
+  TO 'partitioning_too_fine' (FORMAT parquet, PARTITION_BY (day, station_id), OVERWRITE_OR_IGNORE);
+```
+
+The same ten days cut both ways, and one of the small files:
+
+```duckdb needs=by-day,too-fine
+SELECT 'by day' AS cut, count(*) AS files, round(sum(file_size_bytes) / 1e6, 1) AS mb,
+       round(sum(footer_size) / 1e6, 1) AS footers_mb
+FROM parquet_file_metadata('partitioning_by_day/*/*.parquet')
+WHERE file_name < 'partitioning_by_day/day=2026-07-11'
+UNION ALL
+SELECT 'by day and station', count(*), round(sum(file_size_bytes) / 1e6, 1), round(sum(footer_size) / 1e6, 1)
+FROM parquet_file_metadata('partitioning_too_fine/*/*/*.parquet');
+```
+
+```duckdb needs=too-fine
+SELECT num_rows, file_size_bytes, footer_size
+FROM parquet_file_metadata('partitioning_too_fine/day=2026-07-01/station_id=42/data_0.parquet');
+```
+
+One day of it. Find `Scanning Files` and `Data Read`:
+
+```duckdb needs=too-fine
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_too_fine/*/*/*.parquet', hive_partitioning = true)
+WHERE day = DATE '2026-07-05';
+```
+
+</Step>
+</Scene>
+
+Cut by the column the questions name, almost always time, at the coarsest period that still lets
+them prune. A warehouse caps the count too: a BigQuery table holds at most 10,000 partitions, which
+is 27 years of days but only about fourteen months of hours.
+
+## Two levels
+
+<Scene widget="pt-levels">
+<Step>
+
+One week, one station:
+
+```duckdb needs=by-day
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_by_day/*/*.parquet', hive_partitioning = true)
+WHERE day >= DATE '2026-08-01' AND day < DATE '2026-08-08' AND station_id = 42;
+```
+
+</Step>
+<Step>
+
+`station_status_partitioned` was also created with `CLUSTER BY system_id, station_id`.
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02'
+  AND system_id = 'lyft_nyc';
+```
+
+Small enough to run. Its one stage reads a few million rows of 1.8 billion:
+
+```bigquery
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02'
+  AND system_id = 'lyft_nyc';
+```
+
+</Step>
+</Scene>
+
+## Many files, one table
+
+<Scene widget="pt-log">
+<Step>
+</Step>
+<Step>
+
+A log in a few lines of Python: each entry is a JSON file that lists data files, and a reader
+reads exactly one entry's files.
+
+```python needs=by-day
+import json, os
+import duckdb
+
+LOG = "partitioning_log"
+os.makedirs(LOG, exist_ok=True)
+day = lambda d: f"partitioning_by_day/day=2026-08-0{d}/data_0.parquet"
+
+def commit(version, files):
+    """A new version of the table is one small file: the list of its data files."""
+    with open(f"{LOG}/v{version}.json", "w") as entry:
+        json.dump({"version": version, "files": files}, entry)
+
+def rows(version):
+    """A reader opens one entry, then reads exactly the files it lists."""
+    with open(f"{LOG}/v{version}.json") as entry:
+        files = json.load(entry)["files"]
+    return duckdb.sql(f"SELECT count(*) FROM read_parquet({files})").fetchall()[0][0]
+
+commit(0, [day(1)])
+commit(1, [day(1), day(2)])
+for version in (0, 1):
+    print(f"v{version}: {rows(version):,} rows")
+```
+
+</Step>
+<Step>
+
+```python
+duckdb.sql(f"COPY (SELECT * FROM '{day(3)}') TO '{LOG}/aug-03.parquet' (FORMAT parquet)")
+print(f"aug-03.parquet written, no entry lists it. v1: {rows(1):,} rows")
+
+commit(2, [day(1), day(2), f"{LOG}/aug-03.parquet"])
+print(f"v2: {rows(2):,} rows. v1: {rows(1):,} rows")
+print(sorted(os.listdir(LOG)))
+```
+
+</Step>
+</Scene>
+
+Remove what this page wrote:
+
+```bash
+rm -rf partitioning_by_day partitioning_by_month partitioning_too_fine partitioning_log
+```

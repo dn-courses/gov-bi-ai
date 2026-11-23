@@ -1,0 +1,23 @@
+# What this lab adds when a course is presented from the lesson app (`just present postgres`).
+# Merged after compose.yml and before labs/base/compose.app.yml, which makes `workspace` the app.
+# A lab needs a file like this only for extras; most labs have none.
+
+services:
+  workspace:
+    environment:
+      # `shop` is the dataset the presented pages and their widgets run on; the lab's own default
+      # is `pagila`. A page names another database in its meta.
+      - PGDATABASE=shop
+
+  postgres:
+    # A fixed, small machine: the timings the pages quote were measured on 3 CPUs, the laptop keeps
+    # the rest, and a heavy query shows its effect on its neighbours with far less data.
+    cpus: 3
+    environment:
+      # Loads seed/talk/*.sql (60-talk.sh): the `twins` database a presented course uses. Changing
+      # this recreates the container, and the next start re-seeds it.
+      # A course that never queries it turns it off (`app: {talk_data: false}` in course.yml).
+      SEED_TALK_DATA: "${SEED_TALK_DATA:-1}"
+    healthcheck:
+      # The talk data adds a few minutes to the first boot; the lab's own window is 3.
+      retries: 90

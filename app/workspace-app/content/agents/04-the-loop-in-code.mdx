@@ -1,0 +1,234 @@
+export const meta = { title: "The Loop in Code", minutes: 14 };
+
+The loop is a few lines. What those lines send, and what comes back, is where the details are.
+
+<Scene widget="aga-wire">
+<Step>
+
+```python
+import os
+
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+
+ADD = types.FunctionDeclaration(
+    name="add",
+    description="Add two integers. Returns the integer sum.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "a": {"type": "integer", "description": "First addend."},
+            "b": {"type": "integer", "description": "Second addend."},
+        },
+        "required": ["a", "b"],
+    },
+)
+```
+
+</Step>
+<Step>
+
+The same "Hi." three times: alone, with one declaration, with two.
+
+```python
+MULTIPLY = types.FunctionDeclaration(
+    name="multiply",
+    description="Multiply two integers. Returns the integer product.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+        "required": ["a", "b"],
+    },
+)
+OFF = types.AutomaticFunctionCallingConfig(disable=True)
+
+
+def tokens_in(*declarations):
+    tools = [types.Tool(function_declarations=list(declarations))] if declarations else None
+    config = types.GenerateContentConfig(tools=tools, automatic_function_calling=OFF, max_output_tokens=16)
+    return client.models.generate_content(model=MODEL, contents="Hi.", config=config).usage_metadata.prompt_token_count
+
+
+print('"Hi."                 ', tokens_in(), "tokens in")
+print('"Hi." + add           ', tokens_in(ADD), "tokens in")
+print('"Hi." + add, multiply ', tokens_in(ADD, MULTIPLY), "tokens in")
+```
+
+</Step>
+<Step>
+
+Hand the SDK a Python function instead of a declaration, and it runs the loop for you, out of sight:
+
+```python
+def add(a: int, b: int) -> int:
+    """Add two integers. Returns the integer sum."""
+    print(f"  add({a}, {b}) ran, inside generate_content")
+    return a + b
+
+
+hidden = client.models.generate_content(model=MODEL, contents="What is 17 + 25?", config=types.GenerateContentConfig(tools=[add]))
+print(hidden.text)
+print(len(hidden.automatic_function_calling_history), "contents went back and forth that your code never held")
+```
+
+So the pages that follow pass declarations and switch that off:
+
+```python
+CONFIG = types.GenerateContentConfig(
+    system_instruction="Use the provided tools when needed.",
+    tools=[types.Tool(function_declarations=[ADD])],
+    automatic_function_calling=OFF,
+)
+```
+
+</Step>
+<Step>
+
+```python
+contents = [types.Content(role="user", parts=[types.Part(text="What is 17 + 25?")])]
+response = client.models.generate_content(model=MODEL, contents=contents, config=CONFIG)
+
+reply = response.candidates[0].content
+print("role: ", reply.role)
+print("parts:", [[key for key in part.model_dump(exclude_none=True)] for part in reply.parts])
+for call in response.function_calls:
+    print("call: ", call.id, call.name, call.args)
+```
+
+</Step>
+<Step>
+
+Keep the model's message exactly as it came, then answer each call with a function response that carries its id:
+
+```python
+call = response.function_calls[0]
+result = call.args["a"] + call.args["b"]  # the function runs here, in your process
+
+contents.append(reply)
+contents.append(types.Content(role="user", parts=[
+    types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response={"result": result})),
+]))
+for c in contents:
+    print(f"{c.role:>5} |", [key for part in c.parts for key in part.model_dump(exclude_none=True) if key != "thought_signature"])
+```
+
+</Step>
+<Step>
+
+```python
+answer = client.models.generate_content(model=MODEL, contents=contents, config=CONFIG)
+print(answer.text)
+print("function_calls:", answer.function_calls)
+print(answer.usage_metadata.prompt_token_count, "tokens in, against", response.usage_metadata.prompt_token_count, "for the first call")
+```
+
+</Step>
+</Scene>
+
+## The loop around it
+
+<Scene widget="aga-chain">
+<Step>
+</Step>
+<Step>
+
+The loop in three pieces: call the model, run the calls of one turn, go round.
+
+```python
+TOOL_IMPL = {"add": lambda a, b: a + b, "multiply": lambda a, b: a * b}
+CALC = types.GenerateContentConfig(
+    system_instruction="You are a careful calculator. Use the tools; do not do arithmetic in your head.",
+    tools=[types.Tool(function_declarations=[ADD, MULTIPLY])],
+    automatic_function_calling=OFF,
+)
+
+
+def call_model(contents):
+    """One call to the model. Returns its message and the calls in it."""
+    response = client.models.generate_content(model=MODEL, contents=contents, config=CALC)
+    print(f"  {response.usage_metadata.prompt_token_count} tokens in")
+    return response.candidates[0].content, response.function_calls or []
+
+
+def run_calls(calls):
+    """Run every call of one turn. Returns one user message: a response per call, in order."""
+    parts = []
+    for call in calls:
+        result = TOOL_IMPL[call.name](**call.args)
+        print(f"  {call.name}({call.args}) = {result}")
+        parts.append(types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response={"result": result})))
+    return types.Content(role="user", parts=parts)
+
+
+def run_agent(question, max_turns=10):
+    contents = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for turn in range(max_turns):
+        print(f"[turn {turn}]")
+        reply, calls = call_model(contents)
+        contents.append(reply)
+        if not calls:
+            return "".join(part.text or "" for part in reply.parts), contents
+        contents.append(run_calls(calls))
+    raise RuntimeError(f"agent did not finish in {max_turns} turns")
+```
+
+</Step>
+<Step>
+
+```python
+answer, contents = run_agent("What is (12 + 8) * 3?")
+print(answer)
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+Everything the model saw on its last call: the config, and the list.
+
+```python
+def show(part):
+    if part.function_call:
+        return f"function_call {part.function_call.name}({part.function_call.args})"
+    if part.function_response:
+        return f"function_response {part.function_response.name} -> {part.function_response.response}"
+    return repr(part.text)
+
+
+print("config | system_instruction, 2 function declarations")
+for c in contents:
+    print(f"{c.role:>6} |", "; ".join(show(part) for part in c.parts))
+```
+
+</Step>
+<Step>
+
+Two questions that do not depend on each other:
+
+```python
+answer, contents = run_agent("What is 3 + 4, and what is 5 * 6?")
+print(answer)
+print(len(contents[1].parts), "function calls in one model message,", len(contents[2].parts), "responses in one user message")
+```
+
+</Step>
+<Step>
+
+```python expect=error
+run_agent("What is (12 + 8) * 3?", max_turns=2)
+```
+
+</Step>
+</Scene>
+
+The declarations, the list, the loop and the cap are all the machinery there is. Everything else on these pages is about what goes inside them.

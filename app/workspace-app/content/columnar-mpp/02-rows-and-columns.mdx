@@ -1,0 +1,174 @@
+export const meta = { title: "Rows and Columns", minutes: 25, database: "shop", settings: {} };
+
+A bike-share operator polls every station every five minutes: how many bikes, how many free docks.
+The business never asks that table about one row. It asks for the average availability per city,
+per month: a question about all of them.
+
+<Scene widget="rc-need">
+<Step>
+
+Three of its rows:
+
+```sql
+SELECT * FROM station_status LIMIT 3;
+```
+
+</Step>
+<Step>
+
+An index on station and time, then one station on one day:
+
+```sql id=index
+CREATE INDEX IF NOT EXISTS station_status_station_time ON station_status (station_id, captured_at);
+```
+
+```sql needs=index
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT avg(bikes_available)
+FROM station_status
+WHERE station_id = 42
+  AND captured_at >= '2026-08-01' AND captured_at < '2026-08-02';
+```
+
+`Buffers` on the Index Scan is the number of pages read.
+
+</Step>
+<Step>
+
+The business question, with the same index in place:
+
+```sql needs=index
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available)
+FROM station_status
+GROUP BY 1, 2;
+```
+
+A Seq Scan, and its `Buffers` are the table's page count. Fetching all 25.9 million rows one by one
+through the index would be slower than reading the table from start to end.
+
+</Step>
+</Scene>
+
+## What sits next to what
+
+The scan read every page because a page holds whole rows. What a query can leave unread depends on
+what is stored together.
+
+<Scene widget="rc-layout">
+<Step>
+
+How much of each row the monthly average needs:
+
+```sql
+SELECT avg(pg_column_size(captured_at) + pg_column_size(system_id) + pg_column_size(bikes_available))::int AS bytes_the_query_needs,
+       avg(pg_column_size(s.*))::int AS bytes_in_the_row
+FROM station_status s TABLESAMPLE SYSTEM (0.1);
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+The row store's figure is the scan above: every page. For the column store, the same 25.9 million
+rows are in `station_status.parquet`, one **Parquet** file: an open format that stores a table's
+columns apart. **DuckDB**, an engine that reads such files and runs inside this page's server, asks
+it the business question:
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available)
+FROM 'station_status.parquet'
+GROUP BY 1, 2;
+```
+
+In the Table Scan, `Projections` lists the three columns the query names. In the summary,
+`Data Read` is what came off the disk. Check it against the size of those three columns in the file:
+
+```duckdb
+SELECT round(sum(total_compressed_size) FILTER (
+         WHERE path_in_schema IN ('captured_at', 'system_id', 'bikes_available')) / 1e6, 1) AS the_three_columns_mb,
+       round(sum(total_compressed_size) / 1e6, 1) AS the_whole_file_mb
+FROM parquet_metadata('station_status.parquet');
+```
+
+Not one byte of the other twelve columns was read.
+
+</Step>
+<Step>
+
+</Step>
+</Scene>
+
+## The file belongs to no engine
+
+<Scene widget="rc-lake">
+<Step>
+
+```sql
+SELECT pg_relation_filepath('station_status') AS file_in_the_data_folder,
+       pg_size_pretty(pg_relation_size('station_status')) AS size;
+```
+
+</Step>
+<Step>
+
+The average per system, from DuckDB:
+
+```duckdb
+SELECT system_id, round(avg(bikes_available), 3) AS avg_bikes
+FROM 'station_status.parquet'
+GROUP BY system_id
+ORDER BY system_id;
+```
+
+And from a Python program that only reads files, with the `pyarrow` library:
+
+```python
+import pyarrow.parquet as pq
+
+table = pq.read_table("station_status.parquet", columns=["system_id", "bikes_available"])
+by_system = table.group_by("system_id").aggregate([("bikes_available", "mean")]).sort_by("system_id")
+for system, avg in zip(by_system["system_id"].to_pylist(), by_system["bikes_available_mean"].to_pylist()):
+    print(f"{system:4} {avg:.3f}")
+del table
+```
+
+</Step>
+<Step>
+
+The table, as the storage sees it: a plain file in a folder.
+
+```bash
+ls -l station_status.parquet
+```
+
+</Step>
+<Step>
+
+A summary is one more file beside the raw one, which is not touched:
+
+```duckdb
+COPY (SELECT system_id, captured_at::DATE AS day, round(avg(bikes_available), 2) AS avg_bikes
+      FROM 'station_status.parquet'
+      GROUP BY ALL ORDER BY ALL)
+  TO 'rows-and-columns-daily.parquet';
+
+SELECT count(*) AS rows FROM 'rows-and-columns-daily.parquet';
+```
+
+```bash
+ls -l station_status.parquet rows-and-columns-daily.parquet
+```
+
+</Step>
+</Scene>
+
+## Clean up
+
+The summary file is not needed again. The table, its index and `station_status.parquet` are.
+
+```bash
+rm -f rows-and-columns-daily.parquet
+```

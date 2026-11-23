@@ -1,0 +1,75 @@
+export const meta = { title: "The Model Behind an API", minutes: 8 };
+
+Without the chat window, a language model is a function: a list of messages in, one message out.
+
+<Scene widget="ag1-call">
+<Step>
+
+The call. The model's name is a setting, read from the environment.
+
+```python
+import os
+
+from google import genai
+from google.genai import types
+
+client = genai.Client()  # Vertex AI: project and location come from the environment
+MODEL = os.environ["GEMINI_MODEL"]
+
+config = types.GenerateContentConfig(system_instruction="You answer questions about a video-rental business. One sentence.")
+contents = [types.Content(role="user", parts=[types.Part(text="Which customer has spent the most?")])]
+
+response = client.models.generate_content(model=MODEL, contents=contents, config=config)
+print(response.text)
+```
+
+</Step>
+<Step>
+
+```python
+usage = response.usage_metadata
+print("role:    ", response.candidates[0].content.role)
+print("in:      ", usage.prompt_token_count)
+print("out:     ", usage.candidates_token_count)
+print("thinking:", usage.thoughts_token_count)
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+Ask the follow-up alone, then with the conversation in front of it:
+
+```python
+follow_up = types.Content(role="user", parts=[types.Part(text="And who is second?")])
+
+alone = client.models.generate_content(model=MODEL, contents=[follow_up], config=config)
+print("alone:    ", alone.text)
+
+together = client.models.generate_content(model=MODEL, contents=[*contents, response.candidates[0].content, follow_up], config=config)
+print("with list:", together.text)
+print(together.usage_metadata.prompt_token_count, "tokens in, against", usage.prompt_token_count, "for the first call")
+```
+
+</Step>
+<Step>
+
+The same one-word task, with and without a long system instruction in front of it:
+
+```python
+short = client.models.generate_content(model=MODEL, contents="Say 'hi'.")
+long = client.models.generate_content(
+    model=MODEL, contents="Say 'hi'.",
+    config=types.GenerateContentConfig(system_instruction="You are a helpful assistant. " * 200),
+)
+print("short:", short.usage_metadata.prompt_token_count, "tokens in ->", short.text)
+print("long: ", long.usage_metadata.prompt_token_count, "tokens in ->", long.text)
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+Every agent framework is, underneath, code that maintains this list and decides when to call the function again.

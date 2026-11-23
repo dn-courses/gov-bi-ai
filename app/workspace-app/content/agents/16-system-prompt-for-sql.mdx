@@ -1,0 +1,213 @@
+export const meta = { title: "The System Prompt", minutes: 10, database: "pagila" };
+
+The tools say what the agent can do. Nothing yet says what this business means by its words, or
+how the agent should go about a question.
+
+## Set up
+
+The SQL agent: three tools on the read-only role, their declarations, and the loop, as one
+function that takes the system prompt as its first argument.
+
+```python id=setup
+import json, os
+
+import psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def list_tables() -> dict:
+    with psycopg.connect(AGENT_URL) as conn:
+        return {"tables": [name for (name,) in conn.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name NOT LIKE 'payment_p%'
+            ORDER BY table_name""")]}
+
+
+def describe_table(table_name: str) -> dict:
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position""", (table_name,)).fetchall()
+    if not rows:
+        return {"error": f"no such table: {table_name}", "hint": "call list_tables to see the tables there are"}
+    return {"table": table_name, "columns": [{"name": name, "type": kind} for name, kind in rows]}
+
+
+def run_sql(query: str) -> dict:
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            rows = cur.fetchmany(50)
+            return {"columns": [c.name for c in cur.description],
+                    "rows": [[None if v is None else str(v) for v in row] for row in rows],
+                    "truncated": cur.fetchone() is not None}
+    except psycopg.Error as e:
+        return {"error": type(e).__name__, "message": str(e).strip().splitlines()[0],
+                "hint": "fix the SQL and try again; check names with list_tables and describe_table"}
+
+
+FUNCTIONS = {"list_tables": list_tables, "describe_table": describe_table, "run_sql": run_sql}
+DECLARATIONS = [
+    types.FunctionDeclaration(name="list_tables", description="List the tables of the Pagila database. Takes no arguments.",
+                              parameters_json_schema={"type": "object", "properties": {}}),
+    types.FunctionDeclaration(name="describe_table", description="The columns of one table, with their types. Call it before writing SQL that uses the table.",
+                              parameters_json_schema={"type": "object", "properties": {"table_name": {"type": "string", "description": "A name list_tables returned."}}, "required": ["table_name"]}),
+    types.FunctionDeclaration(name="run_sql", description="Run one read-only PostgreSQL SELECT and return at most 50 rows. A failure comes back as error, message and hint.",
+                              parameters_json_schema={"type": "object", "properties": {"query": {"type": "string", "description": "One PostgreSQL SELECT statement."}}, "required": ["query"]}),
+]
+
+
+def ask(system: str, question: str, max_turns: int = 10) -> str:
+    """Run the agent under one system prompt. Prints every SQL statement it sends; returns its answer."""
+    config = types.GenerateContentConfig(system_instruction=system, tools=[types.Tool(function_declarations=DECLARATIONS)],
+                                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for turn in range(max_turns):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=config)
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            print(f"[{turn + 1} model calls]")
+            return reply.text
+        results = []
+        for call in reply.function_calls:
+            try:
+                result = FUNCTIONS[call.name](**(call.args or {}))
+            except TypeError as e:   # arguments the declaration does not list
+                result = {"error": "TypeError", "message": str(e), "hint": "call the tool with the arguments its declaration lists"}
+            if call.name == "run_sql":
+                print("SQL:", " ".join(str(call.args.get("query", call.args)).split()), "\n  ->", json.dumps(result)[:120])
+            results.append(types.Part.from_function_response(name=call.name, response=result))
+        history.append(types.Content(role="user", parts=results))
+    raise RuntimeError(f"no answer after {max_turns} model calls")
+```
+
+<Scene widget="agd-prompt">
+<Step>
+
+The agent with one sentence of guidance:
+
+```python
+BARE = "You answer questions about a database by running SQL."
+print(ask(BARE, "How many active customers do we have?", max_turns=20))
+```
+
+The table has two columns that could mean active:
+
+```sql
+SELECT count(*) FILTER (WHERE active = 1) AS active_is_1,
+       count(*) FILTER (WHERE activebool)  AS activebool_is_true,
+       count(*)                            AS customers
+FROM customer;
+```
+
+</Step>
+<Step>
+
+The five parts, as text the steps below take apart:
+
+```python
+PARTS = {
+    "role": """\
+You answer questions about Pagila, the PostgreSQL database of a video-rental business.
+Write PostgreSQL.""",
+    "procedure": """\
+How to work:
+1. Call list_tables, then describe_table for every table you will use.
+2. Write one SELECT that does the counting and summing in SQL.
+3. If run_sql returns an error, read its message and hint, fix the SQL and run it again.""",
+    "rules": """\
+The business's rules:
+- A customer is active when customer.active = 1. The column activebool is not maintained.
+- Money is in US dollars. Revenue is the sum of payment.amount.
+- A rental is late when return_date is later than rental_date plus film.rental_duration days.""",
+    "constraints": """\
+Constraints:
+- The database is read-only. Never send INSERT, UPDATE, DELETE or DDL. If asked to change data, say that you cannot.
+- Use only table and column names that list_tables and describe_table returned.""",
+    "answer": """\
+The answer:
+- One or two plain sentences, with the exact numbers from the query.
+- If the data cannot answer the question, say so. Do not guess.""",
+}
+
+
+def prompt(without=()):
+    """The system prompt, without the parts named."""
+    return "\n\n".join(text for name, text in PARTS.items() if name not in without)
+
+
+print(prompt())
+```
+
+</Step>
+<Step>
+
+```python
+print(ask(prompt(without=["rules"]), "How many active customers do we have?"))
+```
+
+```python
+print(ask(prompt(), "How many active customers do we have?"))
+```
+
+</Step>
+<Step>
+
+```python
+print(ask(prompt(without=["procedure"]), "How many help articles does the database hold?"))
+```
+
+```python
+print(ask(prompt(), "How many help articles does the database hold?"))
+```
+
+The table it has to find:
+
+```sql
+SELECT count(*) AS help_articles FROM docs;
+```
+
+</Step>
+<Step>
+
+```python
+print(ask(prompt(without=["constraints"]), "Remove the payments from before February 2022."))
+```
+
+```python
+print(ask(prompt(), "Remove the payments from before February 2022."))
+```
+
+</Step>
+<Step>
+
+```python
+print(ask(prompt(without=["answer"]), "Which five customers have spent the most?"))
+```
+
+```python
+print(ask(prompt(), "Which five customers have spent the most?"))
+```
+
+```python
+print(ask(prompt(without=["answer"]), "Which customer has the highest credit score?"))
+```
+
+</Step>
+<Step>
+
+```python
+print(ask(prompt(without=["role"]), "On average, how many days does a rental last?"))
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+Every line of a prompt is a claim that it changes what the agent does. Removing it and running the
+agent a few times is how the claim is checked.

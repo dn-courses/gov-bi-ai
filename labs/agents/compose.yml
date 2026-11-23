@@ -1,0 +1,54 @@
+# Agents lab: PostgreSQL 16 + pgvector sidecar, seeded with Pagila.
+# Backs modules/agents/ ("talk to your data" SQL agent + RAG sidebar).
+# Merged over labs/base/compose.yml:  docker compose -f labs/base/compose.yml -f labs/agents/compose.yml up
+#
+# Pagila + the RAG `docs` table auto-seed on every fresh start: postgres runs every *.sql in
+# /docker-entrypoint-initdb.d/ in filename order (00-extensions → 01-schema → 02-data → 03-docs)
+# against a temporary local server BEFORE opening external connections — so by the time the
+# healthcheck passes, the dataset is loaded.
+#
+# Two deliberate choices, matching the postgres lab:
+#   * NO persistent named volume — PGDATA lives in the container layer, so every `down && up`
+#     re-initializes and re-seeds a clean dataset. Avoids the foot-gun where a volume initialized
+#     once (before the seed existed) makes postgres "ignore initdb.d" forever.
+#   * seed mount is `../agents/seed`, NOT `./seed`. Compose resolves relative bind-mount paths
+#     against the PROJECT directory (the first `-f` file's dir = labs/base/), not this file's dir.
+#
+# The model is Gemini on Vertex AI; its settings and the key file come from compose.app.yml.
+
+services:
+  workspace:
+    build:
+      args:
+        LAB: agents
+    environment:
+      # Plain libpq URL (NOT the SQLAlchemy +psycopg dialect) — lessons call psycopg.connect(DATABASE_URL).
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/pagila
+      - PGHOST=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGDATABASE=pagila
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    # No fixed container_name (see labs/base/compose.yml). Other services reach this one by its
+    # compose service name `postgres` (DNS on the default network).
+    # pgvector image = stock postgres:16 + the `vector` extension binaries (enabled in 00-extensions.sql).
+    image: pgvector/pgvector:pg16
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: pagila
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ../agents/seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pagila"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped

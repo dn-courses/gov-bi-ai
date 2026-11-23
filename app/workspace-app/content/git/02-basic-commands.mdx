@@ -1,0 +1,86 @@
+export const meta = { title: "Git, and the Commands We Use", minutes: 20 };
+
+The course reaches your laptop through Git. This page is the idea behind it, and then the handful
+of commands the seminar uses.
+
+## What Git is, and why the course uses it
+
+<Scene widget="ramp-git-why">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+If an experiment goes wrong, you can always return a file to the last commit, or clone again
+into a new folder and start clean.
+
+</Step>
+<Step>
+
+If you changed a file that the update also changes, Git stops and tells you, rather than overwrite
+your work.
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## The everyday loop
+
+A reminder, not a course. Type along in your own terminal, in an empty folder; the picture shows
+where the file is after each command.
+
+<Scene widget="ramp-git-loop">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+To see the change itself rather than the file's name:
+
+```sh
+git diff
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+With the address of the course repository in place of the folder:
+
+```sh
+git clone <address of the course repository>
+cd <the folder it created>
+git status
+```
+
+</Step>
+</Scene>
+
+## The commands we use
+
+<table>
+  <thead><tr><th>You type</th><th>What it does</th><th>When</th></tr></thead>
+  <tbody>
+    <tr><td><code>git clone &lt;address&gt;</code></td><td>copies a repository, with its history, into a new folder</td><td>once, to get the course</td></tr>
+    <tr><td><code>git pull</code></td><td>brings in the commits added since your copy was made</td><td>when the instructor says there is an update</td></tr>
+    <tr><td><code>git status</code></td><td>says where every changed file stands, and what to type next</td><td>between any two other commands</td></tr>
+    <tr><td><code>git diff</code></td><td>shows the lines that changed and are not staged yet</td><td>before <code>add</code></td></tr>
+    <tr><td><code>git add &lt;file&gt;</code></td><td>puts a change into the draft of the next commit</td><td>when you want to keep it</td></tr>
+    <tr><td><code>git commit -m "…"</code></td><td>records the draft as a snapshot, with a message saying why</td><td>one finished idea at a time</td></tr>
+    <tr><td><code>git log --oneline</code></td><td>lists the snapshots, newest first</td><td>to see what was recorded</td></tr>
+  </tbody>
+</table>

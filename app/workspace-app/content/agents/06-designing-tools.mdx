@@ -1,0 +1,148 @@
+export const meta = { title: "Tools the Model Can Use", minutes: 12, database: "pagila" };
+
+A tool is used well or badly before a line of it runs: the model chooses it from a few sentences
+of text. And when it fails, what it hands back decides whether the loop goes on.
+
+<Scene widget="agb-reads">
+<Step>
+
+A helper that declares a tool, and one that asks once and prints the call the model made:
+
+```python id=setup
+import json, os
+
+import psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def declare(name, description, **params):
+    """A function declaration whose parameters are strings, each with its description."""
+    return types.FunctionDeclaration(name=name, description=description, parameters_json_schema={
+        "type": "object", "required": list(params),
+        "properties": {p: {"type": "string", **({"description": d} if d else {})} for p, d in params.items()}})
+
+
+def config(declarations):
+    return types.GenerateContentConfig(tools=[types.Tool(function_declarations=declarations)],
+                                       automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+def first_call(question, declarations):
+    reply = client.models.generate_content(model=MODEL, contents=question, config=config(declarations))
+    call = (reply.function_calls or [None])[0]
+    return f"{call.name}({json.dumps(call.args)})" if call else "no tool: " + (reply.text or "")[:100]
+```
+
+</Step>
+<Step>
+
+```python
+Q = "How many rentals were there in July 2022?"
+VAGUE = [declare("get_data", "Gets data.", table=""), declare("query", "Runs a query.", q="")]
+for run in range(3):
+    print(first_call(Q, VAGUE))
+```
+
+</Step>
+<Step>
+
+```python
+PRECISE = [
+    declare("get_rows", "Return the first 50 rows of one table, unfiltered: to see what a table holds. Not for counting.",
+            table_name="Exact table name."),
+    declare("run_sql", "Run one PostgreSQL SELECT on the Pagila database and return its rows: to count, sum and filter.",
+            query="One PostgreSQL SELECT statement."),
+]
+for run in range(3):
+    print(first_call(Q, PRECISE))
+```
+
+</Step>
+</Scene>
+
+## How big is one tool?
+
+<Scene widget="agb-size">
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## When a tool fails
+
+<Scene widget="agb-fail">
+<Step>
+
+A tool that counts one customer's rentals, the loop around it, and a name written the way a person
+writes it:
+
+```python
+def rentals_of(customer_name):
+    with psycopg.connect(AGENT_URL) as conn:
+        row = conn.execute("""SELECT count(r.rental_id) FROM customer c LEFT JOIN rental r USING (customer_id)
+                              WHERE c.first_name || ' ' || c.last_name = %s GROUP BY c.customer_id""",
+                           (customer_name,)).fetchone()
+    if row is None:
+        raise LookupError(f"no customer named {customer_name!r}")
+    return {"rentals": row[0]}
+
+
+def run_loop(question, declarations, functions, cap=5):
+    """The loop: print each call and its result; return the model's answer."""
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    for _ in range(cap):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=config(declarations))
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            return reply.text
+        parts = []
+        for call in reply.function_calls:
+            result = functions[call.name](**call.args)
+            print(f"{call.name}({json.dumps(call.args)}) -> {json.dumps(result)}")
+            parts.append(types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response=result)))
+        history.append(types.Content(role="user", parts=parts))
+    return "(stopped at the turn cap)"
+
+
+RENTALS_OF = [declare("rentals_of", "Count the rentals one customer made, by the customer's full name.",
+                      customer_name="The customer's first and last name.")]
+QC = "How many films has Mary Smith rented?"
+```
+
+```python expect=error
+print(run_loop(QC, RENTALS_OF, {"rentals_of": rentals_of}))
+```
+
+</Step>
+<Step>
+
+The same tool, returning its failure:
+
+```python
+def rentals_of_safe(customer_name):
+    try:
+        return rentals_of(customer_name)
+    except LookupError as e:
+        return {"error": str(e), "hint": "names are stored in capitals, as 'FIRST LAST'"}
+
+
+print(rentals_of_safe("Mary Smith"))
+```
+
+</Step>
+<Step>
+
+```python
+print("ANSWER:", run_loop(QC, RENTALS_OF, {"rentals_of": rentals_of_safe}))
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>

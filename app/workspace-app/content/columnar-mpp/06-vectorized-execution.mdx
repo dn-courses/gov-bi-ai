@@ -1,0 +1,150 @@
+export const meta = { title: "Vectorized Execution", minutes: 15, database: "shop", settings: {} };
+
+The query is the average of `bikes_available` where it is above zero, over all 25,920,000 rows.
+Reading the column is no longer the problem. Going through its values is.
+
+<Scene widget="vx-calls">
+<Step>
+
+```python
+import time
+from array import array
+
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
+started = time.perf_counter()
+column = pq.read_table("station_status.parquet", columns=["bikes_available"])["bikes_available"].combine_chunks()
+read_s = time.perf_counter() - started
+bikes = array("h", column.to_numpy().tobytes())   # the same values, as a plain Python array
+print(f"{len(bikes):,} values of bikes_available, {column.nbytes / 1e6:.1f} MB, read in {read_s:.2f} s")
+```
+
+</Step>
+<Step>
+
+The three operators in plain Python, each handing the next one row per call:
+
+```python
+def scan(values):
+    for value in values:              # hands the next operator one row
+        yield value
+
+def keep_positive(rows):
+    for value in rows:                # takes one row, decides, hands one row on
+        if value > 0:
+            yield value
+
+def average(rows):
+    total = count = 0
+    for value in rows:                # takes one row, adds it
+        total += value
+        count += 1
+    return total / count
+```
+
+</Step>
+<Step>
+
+```python
+started = time.perf_counter()
+answer = average(keep_positive(scan(bikes)))
+row_s = time.perf_counter() - started
+print(f"one row per call:   avg = {answer:.4f}   {row_s:5.2f} s")
+```
+
+</Step>
+<Step>
+
+The same three operators, handing each other a slice of the column. Each operator's work on a
+batch is one call into a compiled loop.
+
+```python
+def scan_batches(column, size):
+    for start in range(0, len(column), size):
+        yield column.slice(start, size)           # hands on a batch of values
+
+def keep_positive_batches(batches):
+    for batch in batches:
+        yield batch.filter(pc.greater(batch, 0))  # one call compares the whole batch
+
+def average_batches(batches):
+    total = count = 0
+    for batch in batches:
+        total += pc.sum(batch).as_py()            # one call adds the whole batch
+        count += len(batch)
+    return total / count
+
+started = time.perf_counter()
+answer = average_batches(keep_positive_batches(scan_batches(column, 2048)))
+batch_s = time.perf_counter() - started
+print(f"2,048 per call:     avg = {answer:.4f}   {batch_s:5.2f} s   ({row_s / batch_s:.1f} times faster)")
+```
+
+It needs the column layout: a batch of one column is already one run of one type in memory.
+
+</Step>
+</Scene>
+
+Inside each call, the batch does a second thing for the CPU.
+
+<Scene widget="vx-batch">
+<Step>
+
+Time per value, and one call that runs one compiled loop over the whole column:
+
+```python
+started = time.perf_counter()
+total = pc.sum(column).as_py()                    # one call, one compiled loop over the whole column
+whole_s = time.perf_counter() - started
+for label, seconds in (("one row per call", row_s), ("2,048 per call", batch_s), ("one call for all", whole_s)):
+    print(f"{label:<17} {seconds / len(column) * 1e9:6.2f} ns per value")
+```
+
+A fifth of a nanosecond a value is less than one tick of the CPU's clock: the loop handles more
+than one value per tick.
+
+</Step>
+<Step>
+
+```python
+for size in (64, 2048, 65536):
+    started = time.perf_counter()
+    average_batches(keep_positive_batches(scan_batches(column, size)))
+    print(f"batches of {size:>6,}: {time.perf_counter() - started:5.2f} s")
+```
+
+</Step>
+</Scene>
+
+A column engine does all of this in compiled code, straight from the file. The same query in
+DuckDB, held to one thread like the Python above:
+
+<Scene widget="vx-engine">
+<Step>
+
+Find each operator's rows, and `Total Time`.
+
+```duckdb
+SET threads = 1;
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM 'station_status.parquet'
+WHERE bikes_available > 0;
+RESET threads;
+```
+
+</Step>
+<Step>
+
+DuckDB's vector size is fixed when DuckDB is built:
+
+```python
+import duckdb
+
+size = duckdb.__standard_vector_size__
+print(f"DuckDB {duckdb.__version__}: {size:,} values per vector, {-(-len(column) // size):,} vectors for this column")
+```
+
+</Step>
+</Scene>

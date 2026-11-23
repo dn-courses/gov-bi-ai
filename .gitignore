@@ -1,0 +1,21 @@
+hands-on/
+_build/
+# Spark 4's ArtifactManager creates ./artifacts/spark-<uuid>/ in the DRIVER'S CWD on the first job.
+# In a notebook the CWD is the lesson's own directory, so this lands inside materials/. The path is
+# a hardcoded relative literal in ArtifactManager — no spark conf moves it (spark.driver.artifact.
+# localDir does not exist in Spark 4.0). MyST already excludes it (see builder/myst.py EXCLUDE);
+# this keeps it out of the student's clone too.
+artifacts/
+.env
+.venv/
+__pycache__/
+# Measurement reports are written at RUNTIME by `measure` into /workspace/reports/ (one dir per run);
+# they are local artifacts, never authored source — keep them out of the student's clone.
+reports/
+# Vendored dataset dumps stay out of the student repo: each lab's `fetch-seed.sh` downloads them
+# (pinned and checksummed) before the lab starts. They are named, never matched by a blanket
+# `labs/*/seed/*.sql`: every other file in a seed directory is authored initdb source, and a course
+# published without it still comes up "healthy" — with the database that file creates missing
+# (`tests/test_seed_ships.py`).
+labs/*/seed/01-pagila-schema.sql
+labs/*/seed/02-pagila-data.sql

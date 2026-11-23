@@ -1,0 +1,259 @@
+export const meta = { title: "What Every Request Carries", minutes: 17, database: "pagila" };
+
+Every request carries the whole list, as the model keeps nothing between requests. Here is how far
+that list grows on the SQL agent over Pagila, how much of it is tool results, and three ways to make
+it smaller.
+
+<Scene widget="agc-grow">
+<Step>
+
+The SQL agent. `ask()` runs one question through the loop and logs what the API billed for each
+request. `weigh()` counts tokens through the API, and costs nothing.
+
+```python id=setup
+import json, os
+import psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+
+
+def list_tables():
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
+            AND table_type = 'BASE TABLE' AND table_name NOT LIKE 'payment_p%' ORDER BY table_name""").fetchall()
+    return json.dumps([name for (name,) in rows])
+
+
+def describe_table(table_name):
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position""", (table_name,)).fetchall()
+    return json.dumps({"table": table_name, "columns": [{"name": n, "type": t} for n, t in rows]})
+
+
+def run_sql(query):
+    try:
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            return json.dumps({"columns": [c.name for c in cur.description],
+                               "rows": [[None if v is None else str(v) for v in r] for r in cur.fetchmany(50)]})
+    except psycopg.Error as e:
+        return json.dumps({"error": type(e).__name__, "message": str(e).strip()})
+
+
+def declare(name, description, **params):
+    return types.FunctionDeclaration(name=name, description=description, parameters_json_schema={
+        "type": "object", "properties": params, "required": list(params)})
+
+
+SYSTEM = "You answer questions about the Pagila film-rental database with the tools you are given."
+TOOLS = [types.Tool(function_declarations=[
+    declare("list_tables", "List the base tables of the Pagila database."),
+    declare("describe_table", "The columns of one table, with their types.", table_name={"type": "string"}),
+    declare("run_sql", "Run one read-only PostgreSQL SELECT; up to 50 rows come back as JSON.", query={"type": "string"})])]
+CONFIG = types.GenerateContentConfig(system_instruction=SYSTEM, tools=TOOLS,
+                                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+IMPL = {"list_tables": list_tables, "describe_table": describe_table, "run_sql": run_sql}
+
+
+def weigh(contents):
+    """Tokens in these messages, counted by the API, free of charge."""
+    return client.models.count_tokens(model=MODEL, contents=contents).total_tokens
+
+
+def ask(history, question, impl=IMPL, before=lambda h: h, config=CONFIG):
+    """One question through the loop. Grows `history`; returns one row per request to the model."""
+    history.append(types.Content(role="user", parts=[types.Part(text=question)]))
+    log = []
+    for _ in range(10):
+        reply = client.models.generate_content(model=MODEL, contents=before(history), config=config)
+        history.append(reply.candidates[0].content)
+        u = reply.usage_metadata
+        log.append({"input": u.prompt_token_count, "out": u.candidates_token_count, "asked": [c.name for c in reply.function_calls or []]})
+        if not reply.function_calls:
+            log[-1]["answer"] = reply.text
+            return log
+        results = types.Content(role="user", parts=[types.Part.from_function_response(
+            name=c.name, response={"result": impl[c.name](**c.args)}) for c in reply.function_calls])
+        log[-1]["result"] = weigh([results])
+        history.append(results)
+    raise RuntimeError("no answer after 10 requests")
+
+
+def table(log, first=1):
+    for n, row in enumerate(log, start=first):
+        print(f"request {n}: {row['input']:>5} tokens in", f"→ {', '.join(row['asked'])} → result {row['result']} tokens"
+              if row["asked"] else f"→ answer: {row['answer'][:70]!r}")
+```
+
+</Step>
+<Step>
+
+```python
+history = []
+log = ask(history, "Which three film categories brought in the most rental revenue?")
+table(log)
+```
+
+</Step>
+<Step>
+
+The follow-up goes into the same list:
+
+```python
+first = len(log) + 1
+log += ask(history, "Show me the 20 most recent rentals, every column.")
+table(log[first - 1:], first)
+```
+
+</Step>
+<Step>
+
+```python
+billed = sum(row["input"] for row in log)
+head = log[0]["input"]                                   # system prompt, tool schemas, the question
+results = sum(row.get("result", 0) * (len(log) - 1 - n) for n, row in enumerate(log))  # each rides in every later request
+print(f"{len(log)} requests, {billed:,} input tokens billed")
+print(f"  request 1 again and again   {head * len(log):>6,}   {head * len(log) / billed:.0%}")
+print(f"  tool results, carried along {results:>6,}   {results / billed:.0%}")
+print(f"  everything else             {billed - head * len(log) - results:>6,}")
+
+out = sum(row["out"] for row in log)
+# USD per 1M tokens, gemini-3.5-flash-lite on Vertex AI, global endpoint. Checked 2026-11-23.
+print(f"\noutput: {out:,} tokens, {log[-1]['out']:,} of them in the last answer")
+print(f"cost: input ${billed * 0.30 / 1e6:.4f}, output ${out * 2.50 / 1e6:.4f}")
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Three ways to keep the list small
+
+Each move is tried on your recorded run first: `replay()` counts what every request would have
+carried if the move had been made before it. A replay calls no model.
+
+<Scene widget="agc-shrink">
+<Step>
+</Step>
+<Step>
+
+```python
+def is_result(m):
+    return any(p.function_response for p in m.parts)
+
+
+def marker(history):
+    """Every tool result but the newest becomes one line: the call stays, its body goes."""
+    newest = max((i for i, m in enumerate(history) if is_result(m)), default=-1)
+    return [m if i == newest or not is_result(m) else types.Content(role="user", parts=[
+        types.Part.from_function_response(name=p.function_response.name, response={
+            "result": f"[read earlier: {len(p.function_response.response['result']):,} characters, dropped]"})
+        for p in m.parts]) for i, m in enumerate(history)]
+
+
+def replay(shrink):
+    """What each request of the recorded run would have carried, had `shrink` run before it."""
+    starts = [i for i, m in enumerate(history) if m.role == "model"]
+    return [row["input"] - weigh(history[:i]) + weigh(shrink(history[:i])) for row, i in zip(log, starts)]
+
+
+with_markers = replay(marker)
+print("as sent:     ", [row["input"] for row in log], sum(row["input"] for row in log))
+print("with markers:", with_markers, sum(with_markers))
+```
+
+</Step>
+<Step>
+
+```python
+ON_SCREEN = []   # what the person is shown: every row, as a table
+
+
+def shape(full):
+    return {"columns": full["columns"], "row_count": len(full["rows"]),
+            "shown": "every row is already on the user's screen as a table"}
+
+
+def run_sql_digest(query):
+    """The same query. The rows go to the person's screen; the model is told their shape."""
+    full = json.loads(run_sql(query))
+    if len(full.get("rows", [])) <= 3:
+        return json.dumps(full)
+    ON_SCREEN.append(full)
+    return json.dumps(shape(full))
+
+
+def digest(history):
+    """The recorded run, as if run_sql had been the digest version from the start."""
+    def door(p):
+        full = json.loads(p.function_response.response["result"])
+        if p.function_response.name != "run_sql" or len(full.get("rows", [])) <= 3:
+            return p
+        return types.Part.from_function_response(name="run_sql", response={"result": json.dumps(shape(full))})
+    return [types.Content(role="user", parts=[door(p) for p in m.parts]) if is_result(m) else m for m in history]
+
+
+with_digest = replay(digest)
+print("as sent:    ", [row["input"] for row in log], sum(row["input"] for row in log))
+print("with digest:", with_digest, sum(with_digest))
+```
+
+</Step>
+<Step>
+
+The digest on its own, with the system prompt unchanged:
+
+```python
+trial = []
+answer = ask(trial, "Show me the 20 most recent rentals, every column.", {**IMPL, "run_sql": run_sql_digest})[-1]["answer"]
+print("the model wrote:     ", next((line for line in answer.splitlines() if line.startswith("| 1")), answer[:120]))
+print("the database holds:  ", ON_SCREEN[-1]["rows"][0])
+```
+
+</Step>
+<Step>
+
+```python
+def compact(history):
+    """A question already answered keeps its question and its answer; its tool traffic goes."""
+    asked = [i for i, m in enumerate(history) if m.role == "user" and m.parts[0].text]
+    return [m for i, m in enumerate(history) if i >= asked[-1] or m.parts[0].text]
+
+
+with_compaction = replay(compact)
+both = replay(lambda h: compact(marker(digest(h))))
+print("as sent:        ", [row["input"] for row in log], sum(row["input"] for row in log))
+print("with compaction:", with_compaction, sum(with_compaction))
+print("all three:      ", both, sum(both))
+```
+
+</Step>
+<Step>
+
+All three moves in one live run. The digest's sentence is added to the system prompt:
+
+```python
+RULE = " When run_sql says the rows are on the user's screen, answer in one sentence and never write rows yourself."
+LEAN = CONFIG.model_copy(update={"system_instruction": SYSTEM + RULE})
+impl, shrink, lean = {**IMPL, "run_sql": run_sql_digest}, lambda h: compact(marker(h)), []
+
+lean_log = ask(lean, "Which three film categories brought in the most rental revenue?", impl, shrink, LEAN)
+lean_log += ask(lean, "Show me the 20 most recent rentals, every column.", impl, shrink, LEAN)
+table(lean_log)
+print(f"\n{sum(r['input'] for r in lean_log):,} tokens in, {sum(r['out'] for r in lean_log):,} out",
+      f"(as sent first: {sum(r['input'] for r in log):,} in, {sum(r['out'] for r in log):,} out);",
+      f"the person was shown {len(ON_SCREEN[-1]['rows'])} rows")
+```
+
+</Step>
+</Scene>
+
+Shrink a result at the door when the model needs only part of it to decide what to do next, and
+tell the model what it no longer has. Replace a result with a marker once nothing later depends on
+its body. Compact a question when it is finished, and expect the agent to look some things up again.

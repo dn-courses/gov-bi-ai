@@ -1,0 +1,124 @@
+export const meta = { title: "Why Containers", minutes: 25, database: "pagila", settings: {} };
+
+This page is being served to you by a container, and its cells run inside one. That is the whole
+subject: why the course arrives as containers, and the little you need to know to run them.
+
+<Scene widget="ramp-machines">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+Run it, and compare with the laptop next to you:
+
+```bash
+head -1 /etc/os-release
+python --version
+python -c "import pandas; print('pandas', pandas.__version__)"
+```
+
+Whatever is installed on your own laptop is not in that answer. Ask your own terminal the same
+question and it may print something else, or nothing.
+
+</Step>
+</Scene>
+
+## A container is not a small virtual machine
+
+<Scene widget="ramp-stack">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The app container, where `bash` cells run:
+
+```bash
+uname -r
+ls /proc | grep -c '^[0-9]'
+```
+
+The second line counts the processes this container can see: a handful, not the hundreds running
+on the laptop. Now the database container, asked through SQL for the same kernel file:
+
+```sql
+SELECT trim(pg_read_file('/proc/sys/kernel/osrelease'), E'\n') AS database_container_kernel,
+       split_part(version(), ' on ', 1) AS and_what_is_installed_there;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+In your own terminal, not here — the first line is the time it takes a container to start, run
+one command and be removed:
+
+```sh
+time docker run --rm pgvector/pgvector:pg16 true
+docker images
+```
+
+</Step>
+</Scene>
+
+## The lab you are running
+
+<Scene widget="ramp-lab">
+<Step>
+</Step>
+<Step>
+
+In the course folder, in your own terminal. `just present` is a short name for the compose
+command under it:
+
+```sh
+just present
+docker compose ps
+```
+
+</Step>
+<Step>
+
+The database's view of the conversation — who is calling, and who is answering:
+
+```sql
+SELECT inet_client_addr() AS the_app, inet_server_addr() AS the_database;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+```sh
+just down
+```
+
+</Step>
+</Scene>
+
+## Before the first lab
+
+Two commands tell you whether a laptop is ready. Both run in your own terminal:
+
+```sh
+docker version
+docker run hello-world
+```
+
+<table>
+  <thead><tr><th>You type</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td><code>docker version</code></td><td>Docker is installed and its engine is running: a Client and a Server section both print</td></tr>
+    <tr><td><code>docker run hello-world</code></td><td>an image is downloaded, a container starts from it, prints a greeting and exits</td></tr>
+    <tr><td><code>just present</code></td><td>the course's containers start; the pages open at <code>localhost:3000</code></td></tr>
+    <tr><td><code>docker compose ps</code></td><td>which containers of this folder's lab are running, and whether they are healthy</td></tr>
+    <tr><td><code>docker compose logs app</code></td><td>what a container printed — the first place to look when a page does not load</td></tr>
+    <tr><td><code>just down</code></td><td>the containers are removed; the images stay for next time</td></tr>
+  </tbody>
+</table>

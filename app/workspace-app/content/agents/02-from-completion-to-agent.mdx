@@ -1,0 +1,48 @@
+export const meta = { title: "From a Completion to an Agent", minutes: 8 };
+
+A completion answers. It cannot do anything. An agent is the small amount of code that closes that gap.
+
+<Scene widget="ag1-hands">
+<Step>
+
+The question alone, three times:
+
+```python
+import os
+
+from google import genai
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+
+for _ in range(3):
+    print(client.models.generate_content(model=MODEL, contents="How many films do we have?").text.split("\n")[0], "\n")
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## The loop
+
+<Scene widget="ag1-loop">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+When a framework's diagram has twelve boxes, fold it back to this loop. The extra boxes are almost always inside one of these three: the model, your code, a tool.

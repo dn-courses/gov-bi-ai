@@ -1,0 +1,368 @@
+export const meta = { title: "Task 2: The Warehouse Agent", minutes: 30 };
+
+The bike-share warehouse holds 1.8 billion station readings. The task: let anyone ask it a question
+in English, and make sure no question can read more than about a gigabyte or mean something the
+model made up.
+
+<Scene widget="agg-price">
+<Step>
+
+The table, from its metadata: reading it costs nothing.
+
+```python id=meta
+from google.cloud import bigquery
+
+bq = bigquery.Client()
+for name in ["station_status", "station_status_partitioned"]:
+    table = bq.get_table(f"enjoytech-bq-lab.gbfs.{name}")
+    print(f"{name}: {table.num_rows:,} rows, {table.num_bytes / 1e9:.1f} GB,",
+          "partitioned by", table.time_partitioning.field if table.time_partitioning else "nothing",
+          "| clustered by", table.clustering_fields)
+print([field.name for field in table.schema])
+```
+
+</Step>
+<Step>
+
+The query one run of a free-SQL agent wrote, priced with a dry run:
+
+```bigquery
+-- dry run
+WITH ny_stations AS (
+  SELECT station_id, captured_at, num_bikes_available
+  FROM `enjoytech-bq-lab.gbfs.station_status`
+  WHERE system_id LIKE '%ny%'
+    AND EXTRACT(HOUR FROM captured_at AT TIME ZONE 'America/New_York') BETWEEN 18 AND 22
+)
+SELECT COUNTIF(num_bikes_available = 0) AS empty_count,
+       COUNT(*) AS total_count,
+       SAFE_DIVIDE(COUNTIF(num_bikes_available = 0), COUNT(*)) AS empty_proportion
+FROM ny_stations;
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## The shape: names in, priced SQL out
+
+The agent asks for metrics and dimensions over a range of days. The compiler writes the SQL, always
+with the date filter on the partitioning column; a dry run prices it; above the limit it is refused.
+
+<Scene widget="agg-gate">
+<Step>
+
+The model and the compiler, written into the agent's folder. The model has two metrics; you add the
+third later.
+
+```python id=layer
+import importlib, os, pathlib, sys
+
+FOLDER = pathlib.Path(os.environ["AGENTS_DIR"]) / "warehouse_agent"
+FOLDER.mkdir(parents=True, exist_ok=True)
+(FOLDER / "__init__.py").write_text("from . import agent\n")
+(FOLDER / "model.yml").write_text(r'''
+# The bike-share warehouse's semantic model: the only things the agent can ask for.
+# One row of the table is one reading of one station; most systems report every minute.
+table: enjoytech-bq-lab.gbfs.station_status_partitioned
+time: captured_at            # the partitioning column: every query is filtered on it
+covers: [2026-07-13, 2026-11-16]
+metrics:
+  bikes_available:
+    description: Average bikes ready to rent at a station, over the readings asked for.
+    sql: ROUND(AVG(num_bikes_available), 2)
+  stations_reporting:
+    description: Number of different stations that reported at least once.
+    sql: COUNT(DISTINCT station_id)
+dimensions:
+  system:
+    description: >-
+      The bike-share system: lyft_nyc (New York), lyft_chi (Chicago), lyft_bay (San Francisco),
+      cabi (Washington), bluebikes (Boston), bcycle_indego (Philadelphia), bcycle_lametro
+      (Los Angeles), fortworth, Bixi_MTL (Montreal), MEX (Mexico City), Paris, bike_barcelona,
+      bike_buenosaires. The last two report no bike counts.
+    sql: system_id
+  day:
+    description: The day, in UTC, as YYYY-MM-DD.
+    sql: DATE(captured_at)
+  hour:
+    description: The hour of the day, 0 to 23, in the system's own local time.
+    sql: >-
+      EXTRACT(HOUR FROM captured_at AT TIME ZONE CASE system_id
+      WHEN 'Paris' THEN 'Europe/Paris' WHEN 'bike_barcelona' THEN 'Europe/Madrid'
+      WHEN 'bike_buenosaires' THEN 'America/Argentina/Buenos_Aires' WHEN 'MEX' THEN 'America/Mexico_City'
+      WHEN 'lyft_chi' THEN 'America/Chicago' WHEN 'fortworth' THEN 'America/Chicago'
+      WHEN 'lyft_bay' THEN 'America/Los_Angeles' WHEN 'bcycle_lametro' THEN 'America/Los_Angeles'
+      ELSE 'America/New_York' END)
+  station:
+    description: The station's id within its system.
+    sql: station_id
+'''.lstrip())
+(FOLDER / "semantic.py").write_text(r'''
+"""The bike-share semantic layer: the model, a compiler from a request to the one statement that
+answers it, the statement's price from a dry run, and a run that BigQuery itself caps."""
+
+import datetime
+from pathlib import Path
+
+import yaml
+from google.cloud import bigquery
+
+MODEL = yaml.safe_load((Path(__file__).parent / "model.yml").read_text())
+METRICS, DIMENSIONS = MODEL["metrics"], MODEL["dimensions"]
+FIRST, LAST = (datetime.date.fromisoformat(str(day)) for day in MODEL["covers"])
+
+
+def compile_query(metrics, dimensions, first_day, last_day, filters=None, limit=50):
+    """The SQL for these metrics by these dimensions over these days, and the values it binds.
+    Every statement carries the date range, on the column the table is partitioned by."""
+    filters = filters or {}
+    unknown = [n for n in metrics if n not in METRICS] + [n for n in [*dimensions, *filters] if n not in DIMENSIONS]
+    if unknown or not metrics:
+        raise ValueError(f"not in the model: {unknown}" if unknown else "ask for at least one metric")
+    first, last = datetime.date.fromisoformat(first_day), datetime.date.fromisoformat(last_day)
+    if not FIRST <= first <= last <= LAST:
+        raise ValueError(f"days must lie between {FIRST} and {LAST}, first before last")
+    select = [f"{DIMENSIONS[d]['sql']} AS {d}" for d in dimensions] + [f"{METRICS[m]['sql']} AS {m}" for m in metrics]
+    where = [f"{MODEL['time']} >= TIMESTAMP(@first_day)",
+             f"{MODEL['time']} < TIMESTAMP_ADD(TIMESTAMP(@last_day), INTERVAL 1 DAY)"]
+    where += [f"CAST({DIMENSIONS[d]['sql']} AS STRING) IN UNNEST(@p{i})" for i, d in enumerate(filters)]
+    groups = ", ".join(str(i + 1) for i in range(len(dimensions)))
+    sql = "\n".join(
+        [f"SELECT {', '.join(select)}", f"FROM `{MODEL['table']}`", f"WHERE {' AND '.join(where)}"]
+        + ([f"GROUP BY {groups}", f"ORDER BY {len(dimensions) + 1} DESC"] if dimensions else [])
+        + [f"LIMIT {int(limit)}"])
+    params = [bigquery.ScalarQueryParameter("first_day", "DATE", first), bigquery.ScalarQueryParameter("last_day", "DATE", last)]
+    params += [bigquery.ArrayQueryParameter(f"p{i}", "STRING", [str(v) for v in values]) for i, values in enumerate(filters.values())]
+    return sql, params
+
+
+def price(sql, params):
+    """The bytes the statement would read: a dry run, which BigQuery does not bill."""
+    config = bigquery.QueryJobConfig(query_parameters=params, dry_run=True, use_query_cache=False)
+    return bigquery.Client().query(sql, job_config=config).total_bytes_processed
+
+
+def run(sql, params, max_bytes):
+    """Run the statement; BigQuery refuses it if it would bill more than max_bytes."""
+    config = bigquery.QueryJobConfig(query_parameters=params, maximum_bytes_billed=max_bytes)
+    result = bigquery.Client().query(sql, job_config=config).result()
+    return [field.name for field in result.schema], [[str(v) for v in row.values()] for row in result]
+'''.lstrip())
+(FOLDER / "agent.py").exists() or (FOLDER / "agent.py").write_text("")
+
+
+def load(name):
+    """Import warehouse_agent.<name> as the files are now."""
+    if str(FOLDER.parent) not in sys.path:
+        sys.path.insert(0, str(FOLDER.parent))
+    for module in [m for m in sys.modules if m.startswith("warehouse_agent")]:
+        del sys.modules[module]
+    return importlib.import_module(f"warehouse_agent.{name}")
+
+
+semantic = load("semantic")
+print("metrics:", list(semantic.METRICS), "| dimensions:", list(semantic.DIMENSIONS), "| days:", semantic.FIRST, "to", semantic.LAST)
+```
+
+</Step>
+<Step>
+
+```python
+sql, params = semantic.compile_query(["bikes_available"], ["system"], "2026-09-01", "2026-09-01")
+print(sql)
+print([(p.name, str(p.value)) for p in params])
+```
+
+</Step>
+<Step>
+
+A dry run is free and returns the bytes the query would read:
+
+```python
+for days in [("2026-09-01", "2026-09-01"), ("2026-09-01", "2026-09-07"), ("2026-09-01", "2026-09-30")]:
+    sql, params = semantic.compile_query(["bikes_available"], ["system"], *days)
+    print(days, f"{semantic.price(sql, params) / 1e6:,.0f} MB")
+```
+
+</Step>
+<Step>
+
+Under the limit, it runs, and BigQuery itself refuses to bill more than the limit:
+
+```python
+sql, params = semantic.compile_query(["bikes_available"], ["system"], "2026-09-01", "2026-09-01")
+columns, rows = semantic.run(sql, params, max_bytes=1_000_000_000)
+print(columns)
+for row in rows:
+    print(row)
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Your part
+
+Three pieces, each in its cell: a metric in the model, the price gate in the tool, and the agent's
+instruction. Each cell rewrites one file of `/work/agents/warehouse_agent`.
+
+**1. A metric.** Add `empty_share`: the share of station readings with no bike to rent, from 0 to 1.
+Three systems report no bike counts at all; make sure they do not divide by zero.
+
+```python id=metric manual
+import yaml
+
+model = yaml.safe_load((FOLDER / "model.yml").read_text())
+model["metrics"]["empty_share"] = {
+    "description": "Share of station readings with no bike to rent, from 0 to 1.",
+    "sql": "",
+}
+(FOLDER / "model.yml").write_text(yaml.safe_dump(model, sort_keys=False, width=110))
+semantic = load("semantic")
+sql, params = semantic.compile_query(["empty_share"], ["system"], "2026-09-01", "2026-09-01")
+print(sql)
+```
+
+**2. The gate and 3. the instruction.** `query_metrics` must price the query first, refuse it above
+`MAX_BYTES` as data the model can read (with a hint what to narrow), and run it otherwise, returning
+the bytes with the rows. Then write the instruction.
+
+```python id=agent manual
+(FOLDER / "agent.py").write_text(r'''
+"""The warehouse agent: answers questions about bike-share stations from the semantic model. It
+never writes SQL, and a request that would read too much is refused before it runs."""
+
+import os
+
+from google.adk.agents import Agent
+from pydantic import BaseModel
+
+from . import semantic
+
+# Traces go to Phoenix where there is one (the lab); a deployed agent has none beside it.
+if os.environ.get("PHOENIX_COLLECTOR_ENDPOINT"):
+    from phoenix.otel import register
+
+    register(project_name="warehouse_agent", auto_instrument=True, batch=False, verbose=False)
+
+MAX_BYTES = int(os.environ.get("MAX_BYTES", 1_000_000_000))
+
+
+class Filter(BaseModel):
+    """Keep only rows where a dimension has one of these values."""
+
+    dimension: str
+    values: list[str]
+
+
+def list_metrics() -> dict:
+    """List what can be asked: every metric and dimension with its meaning, the days the data covers,
+    and the most bytes one query may read."""
+    describe = lambda items: {name: item["description"] for name, item in items.items()}  # noqa: E731
+    return {"metrics": describe(semantic.METRICS), "dimensions": describe(semantic.DIMENSIONS),
+            "days": [str(semantic.FIRST), str(semantic.LAST)], "max_bytes": MAX_BYTES}
+
+
+def query_metrics(metrics: list[str], dimensions: list[str], first_day: str, last_day: str,
+                  filters: list[Filter] | None = None) -> dict:
+    """Compute metrics over a range of days, optionally split by dimensions and filtered. The only
+    way to get numbers. The query is priced first and refused if it would read too much.
+
+    Args:
+        metrics: metric names from list_metrics, at least one.
+        dimensions: dimension names to split by; empty for one total.
+        first_day: the first day, as YYYY-MM-DD.
+        last_day: the last day, included, as YYYY-MM-DD.
+        filters: dimension filters, e.g. one system.
+    """
+    try:
+        sql, params = semantic.compile_query(metrics, dimensions, first_day, last_day,
+                                             {f.dimension: f.values for f in filters or []})
+    except ValueError as problem:
+        return {"status": "error", "error": str(problem)}
+    # yours: price the statement with semantic.price(sql, params). Above MAX_BYTES, return
+    # {"status": "refused", ...} with the bytes and a hint of what to narrow; nothing runs.
+    # Otherwise run it with semantic.run(sql, params, MAX_BYTES) and return the status,
+    # the bytes, the sql, the columns and the rows.
+    raise NotImplementedError("the gate")
+
+
+root_agent = Agent(
+    name="warehouse_agent",
+    model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    instruction="",  # yours: what it answers, where numbers come from, days, refusals, bytes
+    tools=[list_metrics, query_metrics],
+)
+'''.lstrip())
+agent = load("agent")
+print([tool.__name__ for tool in agent.root_agent.tools])
+```
+
+Check the tools without a model: one request that runs, one that is refused, one the model does not
+know.
+
+```python id=check
+for request in [(["bikes_available"], ["system"], "2026-09-01", "2026-09-01"),
+                (["empty_share"], ["system"], "2026-09-01", "2026-09-30"),
+                (["profit"], ["system"], "2026-09-01", "2026-09-01")]:
+    result = agent.query_metrics(*request)
+    print(result["status"], {k: v for k, v in result.items() if k in ("bytes", "error", "hint")}, result.get("rows", [])[:3])
+```
+
+## Ask it
+
+From a cell, through ADK's runner. Each question calls the model a few times and reads at most the
+limit.
+
+```python id=ask
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+runner = InMemoryRunner(agent=agent.root_agent, app_name="warehouse_agent")
+
+
+async def ask(question):
+    session = await runner.session_service.create_session(app_name="warehouse_agent", user_id="me")
+    message = types.Content(role="user", parts=[types.Part(text=question)])
+    print("Q:", question)
+    async for event in runner.run_async(user_id="me", session_id=session.id, new_message=message,
+                                        run_config=RunConfig(max_llm_calls=8)):
+        for call in event.get_function_calls():
+            print("   call:", call.name, dict(call.args))
+        for response in event.get_function_responses():
+            print("   ->", response.response.get("status"), response.response.get("bytes"), response.response.get("rows", [])[:2])
+        if event.is_final_response() and event.content and event.content.parts:
+            print("A:", (event.content.parts[0].text or "").strip(), "\n")
+
+
+await ask("Which system had the highest share of empty stations on 2026-09-01?")
+await ask("Compare the average bikes available per system over the first week of September 2026.")
+```
+
+The same folder in the dev UI: open http://localhost:8000, pick `warehouse_agent`, and ask the
+questions below. Click a `query_metrics` event to see the SQL and the bytes.
+
+```python
+import json, urllib.request
+
+print(json.load(urllib.request.urlopen("http://adk:8000/list-apps")))
+```
+
+## The question sheet
+
+The values were computed from the table with plain SQL, not through the agent. Compare yours.
+
+<table>
+<thead><tr><th>Question</th><th>What the warehouse says</th></tr></thead>
+<tbody>
+<tr><td>Which system had the highest share of empty stations on 2026-09-01?</td><td><code>lyft_chi</code>, 0.4423 (then <code>MEX</code>, 0.3024)</td></tr>
+<tr><td>How many stations reported in lyft_nyc on 2026-10-01?</td><td>2,520</td></tr>
+<tr><td>At what hour of the day were New York's stations emptiest on 2026-09-15?</td><td>11:00 New York time, 0.1112</td></tr>
+<tr><td>Compare the average bikes available per system over the first week of September 2026.</td><td>Refused: 2,567 MB. A fair answer says so and offers less.</td></tr>
+<tr><td>What was our revenue last month?</td><td>Not in the model: no metric, and no data after 2026-11-16.</td></tr>
+</tbody>
+</table>

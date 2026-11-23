@@ -1,0 +1,323 @@
+export const meta = { title: "Evals and Observability", minutes: 20 };
+
+An agent writes a new sentence every run, and one edited line can move every answer without
+changing how any of them reads. A check that runs after each change has to look at what the answer
+rests on: the value and the calls.
+
+<Scene widget="agg-evals">
+<Step>
+
+The warehouse agent from the task, loaded from its folder. If yours is not finished yet, the
+reference agent is written in its place.
+
+```python id=reference needs=30a-task-2-the-warehouse-agent#layer
+import yaml
+
+REFERENCE_AGENT = r'''
+"""The warehouse agent: answers questions about bike-share stations from the semantic model. It
+never writes SQL, and a request that would read too much is refused before it runs."""
+
+import os
+
+from google.adk.agents import Agent
+from pydantic import BaseModel
+
+from . import semantic
+
+# Traces go to Phoenix where there is one (the lab); a deployed agent has none beside it.
+if os.environ.get("PHOENIX_COLLECTOR_ENDPOINT"):
+    from phoenix.otel import register
+
+    register(project_name="warehouse_agent", auto_instrument=True, batch=False, verbose=False)
+
+MAX_BYTES = int(os.environ.get("MAX_BYTES", 1_000_000_000))
+
+
+class Filter(BaseModel):
+    """Keep only rows where a dimension has one of these values."""
+
+    dimension: str
+    values: list[str]
+
+
+def list_metrics() -> dict:
+    """List what can be asked: every metric and dimension with its meaning, the days the data covers,
+    and the most bytes one query may read."""
+    describe = lambda items: {name: item["description"] for name, item in items.items()}  # noqa: E731
+    return {"metrics": describe(semantic.METRICS), "dimensions": describe(semantic.DIMENSIONS),
+            "days": [str(semantic.FIRST), str(semantic.LAST)], "max_bytes": MAX_BYTES}
+
+
+def query_metrics(metrics: list[str], dimensions: list[str], first_day: str, last_day: str,
+                  filters: list[Filter] | None = None) -> dict:
+    """Compute metrics over a range of days, optionally split by dimensions and filtered. The only
+    way to get numbers. The query is priced first and refused if it would read too much.
+
+    Args:
+        metrics: metric names from list_metrics, at least one.
+        dimensions: dimension names to split by; empty for one total.
+        first_day: the first day, as YYYY-MM-DD.
+        last_day: the last day, included, as YYYY-MM-DD.
+        filters: dimension filters, e.g. one system.
+    """
+    try:
+        sql, params = semantic.compile_query(metrics, dimensions, first_day, last_day,
+                                             {f.dimension: f.values for f in filters or []})
+    except ValueError as problem:
+        return {"status": "error", "error": str(problem)}
+    cost = semantic.price(sql, params)
+    if cost > MAX_BYTES:
+        return {"status": "refused", "bytes": cost, "max_bytes": MAX_BYTES,
+                "hint": "Too much to read. Ask for fewer days, fewer dimensions or one system."}
+    columns, rows = semantic.run(sql, params, MAX_BYTES)
+    return {"status": "ok", "bytes": cost, "sql": sql, "columns": columns, "rows": rows}
+
+
+root_agent = Agent(
+    name="warehouse_agent",
+    model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    instruction=(
+        "You answer questions about bike-share stations. Numbers come only from query_metrics. "
+        "Call list_metrics first to learn the names and the days the data covers. "
+        "Every question needs a range of days; if the question gives none, ask for it. "
+        "If a query is refused, narrow it and try once more, or say what to narrow. "
+        "End every answer with the bytes the query read, in MB or GB. Never estimate a number."
+    ),
+    tools=[list_metrics, query_metrics],
+)
+'''.lstrip()
+
+model = yaml.safe_load((FOLDER / "model.yml").read_text())
+if not model["metrics"].get("empty_share", {}).get("sql"):
+    print("model.yml has no empty_share yet: adding the reference one")
+    model["metrics"]["empty_share"] = {"description": "Share of station readings with no bike to rent, from 0 to 1.",
+                                       "sql": "ROUND(SAFE_DIVIDE(COUNTIF(num_bikes_available = 0), COUNT(num_bikes_available)), 4)"}
+    (FOLDER / "model.yml").write_text(yaml.safe_dump(model, sort_keys=False, width=110))
+mine = FOLDER / "agent.py"
+if not mine.exists() or "NotImplementedError" in mine.read_text() or 'instruction=""' in mine.read_text():
+    print("agent.py is not finished yet: writing the reference one")
+    mine.write_text(REFERENCE_AGENT)
+semantic, agent = load("semantic"), load("agent")
+print([tool.__name__ for tool in agent.root_agent.tools], list(semantic.METRICS))
+```
+
+A copy of it with one line of `model.yml` changed: the hour in UTC instead of New York time.
+
+```python id=setup
+import json, re, shutil
+
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+COPY = pathlib.Path("/tmp/evals/warehouse_agent_utc")
+shutil.rmtree(COPY, ignore_errors=True)
+shutil.copytree(FOLDER, COPY, ignore=shutil.ignore_patterns("__pycache__", ".adk", "*.json"))
+text = (COPY / "model.yml").read_text()
+(COPY / "model.yml").write_text(re.sub(r"(  hour:\n    description: ).*?\n    sql: .*?(?=\n  station:)",
+                                       r"\1The hour of the day, 0 to 23.\n    sql: EXTRACT(HOUR FROM captured_at)", text, flags=re.S))
+sys.path.insert(0, str(COPY.parent))
+for module in [m for m in sys.modules if m.startswith("warehouse_agent_utc")]:
+    del sys.modules[module]
+import warehouse_agent_utc.agent as changed
+
+
+async def ask(root_agent, question):
+    """Run one question; return the calls the agent made, the rows of its last good query, and its answer."""
+    runner = InMemoryRunner(agent=root_agent, app_name="warehouse_agent")
+    session = await runner.session_service.create_session(app_name="warehouse_agent", user_id="me")
+    run = {"calls": [], "rows": None, "answer": ""}
+    async for event in runner.run_async(user_id="me", session_id=session.id, run_config=RunConfig(max_llm_calls=8),
+                                        new_message=types.Content(role="user", parts=[types.Part(text=question)])):
+        run["calls"] += [(call.name, dict(call.args)) for call in event.get_function_calls()]
+        for response in event.get_function_responses():
+            if response.response.get("status") == "ok" and "rows" in response.response:
+                run["rows"] = response.response["rows"]
+        if event.is_final_response() and event.content and event.content.parts:
+            run["answer"] = (event.content.parts[0].text or "").strip()
+    return run
+
+
+print("hour, as shipped:", semantic.DIMENSIONS["hour"]["sql"][:60], "…")
+print("hour, in the copy:", changed.semantic.DIMENSIONS["hour"]["sql"])
+```
+
+The same question to both. This cell calls the model twice.
+
+```python id=both
+QUESTION = "At what hour of the day were New York's stations emptiest on 2026-09-15?"
+runs = {"as shipped": await ask(agent.root_agent, QUESTION), "one line changed": await ask(changed.root_agent, QUESTION)}
+for name, run in runs.items():
+    print(f"{name}: {run['calls'][-1]}\n   first row: {run['rows'][0]}\n   {run['answer']}\n")
+```
+
+</Step>
+<Step>
+
+The expected value, written once with plain SQL on the table, without the agent:
+
+```bigquery
+SELECT EXTRACT(HOUR FROM captured_at AT TIME ZONE 'America/New_York') AS new_york_hour,
+       ROUND(COUNTIF(num_bikes_available = 0) / COUNT(*), 4) AS empty_share
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE DATE(captured_at) = '2026-09-15' AND system_id = 'lyft_nyc'
+GROUP BY 1 ORDER BY 2 DESC LIMIT 3;
+```
+
+The check reads the value the answer rests on: the hour in the first row the tool returned.
+
+```python
+EXPECTED_HOUR = "11"
+
+for name, run in runs.items():
+    print(f"{name:17}", "pass" if run["rows"][0][0] == EXPECTED_HOUR else "FAIL", "| hour", run["rows"][0][0])
+```
+
+</Step>
+<Step>
+
+ADK's trajectory check, on the calls the two runs made. No model is called.
+
+```python id=trajectory
+from google.adk.evaluation.eval_case import IntermediateData, Invocation
+from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
+
+trajectory = TrajectoryEvaluator(eval_metric=EvalMetric(
+    metric_name="tool_trajectory_avg_score", threshold=1.0, criterion={"threshold": 1.0, "match_type": "IN_ORDER"}))
+
+
+def invocation(calls):
+    return Invocation(user_content=types.Content(role="user", parts=[types.Part(text="?")]),
+                      intermediate_data=IntermediateData(tool_uses=[types.FunctionCall(name=n, args=a) for n, a in calls]))
+
+
+def score(actual_calls, expected_calls):
+    return trajectory.evaluate_invocations([invocation(actual_calls)], [invocation(expected_calls)]).overall_score
+
+
+NYC = [{"dimension": "system", "values": ["lyft_nyc"]}]
+EXPECTED = [("query_metrics", {"metrics": ["empty_share"], "dimensions": ["hour"],
+                               "first_day": "2026-09-15", "last_day": "2026-09-15", "filters": NYC})]
+for name, run in runs.items():
+    print(f"{name:17} calls score:", score(run["calls"], EXPECTED))
+```
+
+</Step>
+<Step>
+
+The same check on calls written by hand: each returns the right number.
+
+```python
+STATIONS = {"metrics": ["stations_reporting"], "dimensions": [], "first_day": "2026-10-01", "last_day": "2026-10-01", "filters": NYC}
+variants = {
+    "as expected": STATIONS,
+    "also split by system": {**STATIONS, "dimensions": ["system"]},
+    "filter keys in another order": {**STATIONS, "filters": [{"values": ["lyft_nyc"], "dimension": "system"}]},
+    "an extra argument set to None": {**STATIONS, "limit": None},
+}
+for name, args in variants.items():
+    print(f"{name:30}", score([("list_metrics", {}), ("query_metrics", args)], [("query_metrics", STATIONS)]))
+```
+
+</Step>
+<Step>
+
+An eval set is the cases as data: a question and the calls it should lead to. It lives in the
+agent's folder, with the criteria beside it.
+
+```python id=evalset
+def case(eval_id, question, args):
+    return {"eval_id": eval_id, "session_input": {"app_name": "warehouse_agent", "user_id": "eval", "state": {}},
+            "conversation": [{"invocation_id": eval_id, "user_content": {"role": "user", "parts": [{"text": question}]},
+                              "intermediate_data": {"tool_uses": [{"name": "query_metrics", "args": args}]}}]}
+
+
+EVALSET = {"eval_set_id": "warehouse", "eval_cases": [
+    case("empty_by_system", "Which system had the highest share of empty stations on 2026-09-01?",
+         {"metrics": ["empty_share"], "dimensions": ["system"], "first_day": "2026-09-01", "last_day": "2026-09-01"}),
+    case("nyc_stations", "How many stations reported in lyft_nyc on 2026-10-01?", STATIONS),
+    case("nyc_emptiest_hour", QUESTION, EXPECTED[0][1]),
+]}
+(FOLDER / "warehouse.evalset.json").write_text(json.dumps(EVALSET, indent=1))
+(FOLDER / "test_config.json").write_text(json.dumps(
+    {"criteria": {"tool_trajectory_avg_score": {"threshold": 1.0, "match_type": "IN_ORDER"}}}))
+print(len(EVALSET["eval_cases"]), "cases written")
+```
+
+`adk eval` runs every case through the agent and scores it. It calls the model three times per
+case; the cell keeps the summary and each case's calls.
+
+```bash
+cd /work/agents
+adk eval warehouse_agent warehouse_agent/warehouse.evalset.json \
+  --config_file_path warehouse_agent/test_config.json --print_detailed_results 2>/dev/null |
+  awk '/Tests (passed|failed)|Eval Id:|Overall Eval Status/ {print} /Invocation Details/ {p=1} p && /tool_call_count_v1:/ {p=0} p {print}'
+```
+
+Run it twice: the failures can move, because the agent sometimes sends `filters=None` and sometimes
+leaves it out. Each failure is either a wrong agent or a wrong check; reading it tells which.
+
+</Step>
+</Scene>
+
+## A trace is a table
+
+Every run of the agent sends its spans to Phoenix: open http://localhost:6006 and pick the project
+the lab's traces go to. The same spans come back over its REST API as rows.
+
+<Scene widget="agg-trace">
+<Step>
+
+One more question, then its trace from Phoenix.
+
+```python id=trace
+import time, urllib.request
+from datetime import datetime
+
+PHOENIX = "http://phoenix:6006/v1/projects"
+
+
+def spans_of_last_run(app="warehouse_agent"):
+    """The spans of the newest trace whose root is this agent's invocation, from any project."""
+    spans = []
+    for project in json.load(urllib.request.urlopen(PHOENIX))["data"]:
+        spans += json.load(urllib.request.urlopen(f"{PHOENIX}/{project['id']}/spans?limit=1000"))["data"]
+    roots = [s for s in spans if s["name"] == f"invocation [{app}]"]
+    newest = max(roots, key=lambda s: s["start_time"])["context"]["trace_id"]
+    return [s for s in spans if s["context"]["trace_id"] == newest]
+
+
+await ask(agent.root_agent, QUESTION)
+time.sleep(1)
+spans = spans_of_last_run()
+print(len(spans), "spans in trace", spans[0]["context"]["trace_id"])
+```
+
+</Step>
+<Step>
+
+```python
+import pandas as pd
+
+start = min(datetime.fromisoformat(s["start_time"]) for s in spans)
+names = {s["context"]["span_id"]: s["name"] for s in spans}
+ms = lambda a, b: round((datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds() * 1000)
+trace = pd.DataFrame([{
+    "name": s["name"], "kind": s["span_kind"], "parent": names.get(s["parent_id"], ""),
+    "start_ms": ms(start.isoformat(), s["start_time"]), "ms": ms(s["start_time"], s["end_time"]),
+    "tokens_in": s["attributes"].get("llm.token_count.prompt"), "tokens_out": s["attributes"].get("llm.token_count.completion"),
+} for s in spans]).sort_values("start_ms")
+print(trace.to_string(index=False))
+```
+
+</Step>
+<Step>
+
+```python
+print(trace.groupby("kind").agg(spans=("name", "size"), ms=("ms", "sum"),
+                                tokens_in=("tokens_in", "sum"), tokens_out=("tokens_out", "sum")))
+```
+
+</Step>
+</Scene>

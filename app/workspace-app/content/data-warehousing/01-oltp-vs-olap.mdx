@@ -1,0 +1,78 @@
+export const meta = { title: "Two Workloads, Two Shapes", minutes: 8, database: "shop", settings: { search_path: "mart", max_parallel_workers_per_gather: "0" } };
+
+The lab's `shop` database holds one shop's orders twice: as the application writes them, in the
+schema `public`, and as analysts read them, in the schema `mart`.
+
+<Scene widget="dw-workloads">
+<Step>
+
+The clerk's statement, as the database ran it:
+
+```sql
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT order_id, customer_id, status, created_at
+FROM public.orders
+WHERE order_id = 4473;
+```
+
+</Step>
+<Step>
+
+The analyst's statement. Add `actual rows` on the `Seq Scan` line to `Rows Removed by Filter`, and
+compare the sum with the rows at the top:
+
+```sql
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT country, count(*) AS orders
+FROM public.orders
+WHERE created_at >= '2025-01-01'
+GROUP BY country;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+The two sides keep the same order in two shapes:
+
+<Scene widget="dw-shapes">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The wide rows, rebuilt from the four tables:
+
+```sql
+SELECT o.order_id, i.line_no, o.created_at::date AS ordered_on,
+       c.customer_id, c.country, p.product_id, p.category_id, i.quantity, i.unit_cents
+FROM public.orders o
+JOIN public.customers   c ON c.customer_id = o.customer_id
+JOIN public.order_items i ON i.order_id    = o.order_id
+JOIN public.products    p ON p.product_id  = i.product_id
+WHERE o.order_id = 4473
+ORDER BY i.line_no;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+How many wide rows would carry this customer's country:
+
+```sql
+SELECT count(*) AS wide_rows
+FROM public.order_items i
+JOIN public.orders o ON o.order_id = i.order_id
+WHERE o.customer_id = 21688;
+```
+
+</Step>
+</Scene>

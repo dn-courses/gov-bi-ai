@@ -1,0 +1,239 @@
+export const meta = { title: "Statistics and Skipping", minutes: 30, database: "shop", settings: {} };
+
+The whole quarter of station readings is one Parquet file of 25,920,000 rows. Ask it about one day.
+
+<Scene widget="st-file">
+<Step>
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM 'station_status.parquet'
+WHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'
+  AND captured_at <  TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
+
+Find `Data Read` in the summary, and the rows that leave the Table Scan.
+
+</Step>
+<Step>
+
+The file lists its own layout:
+
+```duckdb
+SELECT count(DISTINCT row_group_id) AS row_groups,
+       max(row_group_num_rows) AS rows_per_group,
+       count(*) AS column_chunks
+FROM parquet_metadata('station_status.parquet');
+```
+
+</Step>
+<Step>
+
+The footer's entries for `captured_at` and `station_id`, in the first three row groups and the last:
+
+```duckdb
+SELECT row_group_id, row_group_num_rows AS rows, path_in_schema AS column_name,
+       stats_min_value AS min, stats_max_value AS max
+FROM parquet_metadata('station_status.parquet')
+WHERE path_in_schema IN ('captured_at', 'station_id')
+  AND row_group_id IN (0, 1, 2, 210)
+ORDER BY row_group_id, column_name;
+```
+
+The file was written station by station, so each row group holds a few stations' whole quarter.
+
+</Step>
+</Scene>
+
+A reader can use those two numbers before it reads anything else.
+
+<Scene widget="st-skip">
+<Step>
+
+Do the reader's check by hand, on the footer alone:
+
+```duckdb
+SELECT count(*) FILTER (WHERE stats_min_value::TIMESTAMPTZ <  TIMESTAMPTZ '2026-08-02 00:00:00+00'
+                          AND stats_max_value::TIMESTAMPTZ >= TIMESTAMPTZ '2026-08-01 00:00:00+00') AS may_hold_the_day,
+       count(*) AS row_groups
+FROM parquet_metadata('station_status.parquet')
+WHERE path_in_schema = 'captured_at';
+```
+
+</Step>
+<Step>
+
+Write the same rows sorted by time into a copy of this page's own, with the newer Parquet writer
+(`PARQUET_VERSION v2`). It takes about three seconds.
+
+```duckdb id=sorted
+COPY (SELECT * FROM 'station_status.parquet' ORDER BY captured_at, station_id)
+  TO 'statistics_and_skipping.parquet' (FORMAT parquet, PARQUET_VERSION v2);
+```
+
+The same check on the copy, and the spans of the row groups around 1 August:
+
+```duckdb needs=sorted
+SELECT count(*) FILTER (WHERE stats_min_value::TIMESTAMPTZ <  TIMESTAMPTZ '2026-08-02 00:00:00+00'
+                          AND stats_max_value::TIMESTAMPTZ >= TIMESTAMPTZ '2026-08-01 00:00:00+00') AS may_hold_the_day,
+       count(*) AS row_groups
+FROM parquet_metadata('statistics_and_skipping.parquet')
+WHERE path_in_schema = 'captured_at';
+```
+
+```duckdb needs=sorted
+SELECT row_group_id, stats_min_value AS min, stats_max_value AS max
+FROM parquet_metadata('statistics_and_skipping.parquet')
+WHERE path_in_schema = 'captured_at' AND row_group_id BETWEEN 71 AND 75
+ORDER BY row_group_id;
+```
+
+</Step>
+<Step>
+
+The query from the start of the page, on the copy. Compare `Row Groups Scanned` and `Data Read`
+with the first run.
+
+```duckdb needs=sorted
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM 'statistics_and_skipping.parquet'
+WHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'
+  AND captured_at <  TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
+
+</Step>
+<Step>
+
+One station, on each file:
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT avg(bikes_available) FROM 'station_status.parquet' WHERE station_id = 42;
+```
+
+```duckdb needs=sorted
+EXPLAIN ANALYZE
+SELECT avg(bikes_available) FROM 'statistics_and_skipping.parquet' WHERE station_id = 42;
+```
+
+What the sort did to the columns that followed the station:
+
+```duckdb needs=sorted
+SELECT path_in_schema AS column_name,
+       round(sum(total_compressed_size) FILTER (WHERE file_name = 'station_status.parquet') / 1e6, 1) AS station_order_mb,
+       round(sum(total_compressed_size) FILTER (WHERE file_name = 'statistics_and_skipping.parquet') / 1e6, 1) AS time_order_mb
+FROM parquet_metadata(['station_status.parquet', 'statistics_and_skipping.parquet'])
+WHERE path_in_schema IN ('station_id', 'system_id', 'name', 'legacy_id')
+GROUP BY 1 ORDER BY 3 DESC;
+```
+
+```python needs=sorted
+import os
+
+for f in ["station_status.parquet", "statistics_and_skipping.parquet"]:
+    print(f"{f:34} {os.path.getsize(f) / 1e6:4.0f} MB")
+```
+
+The copy is smaller overall because the v2 writer encodes the sorted times far smaller; the same
+writer in station order makes a 33 MB file, so sorting by time costs about 20 MB.
+
+</Step>
+</Scene>
+
+ORC, the other common column file, calls its row groups *stripes* and keeps the same minimums and
+maximums.
+
+<Scene widget="st-footer">
+<Step>
+
+Add up the footer, without reading a row:
+
+```duckdb
+SELECT sum(row_group_num_rows) AS rows,
+       min(stats_min_value) AS first_reading,
+       max(stats_max_value) AS last_reading
+FROM parquet_metadata('station_status.parquet')
+WHERE path_in_schema = 'captured_at';
+```
+
+</Step>
+<Step>
+
+```duckdb
+EXPLAIN
+SELECT count(*), min(captured_at), max(captured_at)
+FROM 'station_status.parquet';
+```
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT count(*), min(captured_at), max(captured_at)
+FROM 'station_status.parquet';
+```
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT sum(bikes_available)
+FROM 'station_status.parquet';
+```
+
+</Step>
+<Step>
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT max(captured_at)
+FROM 'station_status.parquet'
+WHERE captured_at < TIMESTAMPTZ '2026-07-02 00:00:00+00';
+```
+
+```duckdb needs=sorted
+EXPLAIN ANALYZE
+SELECT max(captured_at)
+FROM 'statistics_and_skipping.parquet'
+WHERE captured_at < TIMESTAMPTZ '2026-07-02 00:00:00+00';
+```
+
+</Step>
+</Scene>
+
+A warehouse holds the same kind of files, by the thousand, and charges by the bytes a query reads.
+A cell that starts with `-- dry run` is priced and not run, and costs nothing.
+
+<Scene widget="st-dryrun">
+<Step>
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
+```
+
+</Step>
+<Step>
+
+```bigquery
+-- dry run
+SELECT COUNT(*) AS readings
+FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+```bigquery
+-- dry run
+SELECT MIN(captured_at) AS first_reading, MAX(captured_at) AS last_reading
+FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+</Step>
+</Scene>
+
+## Clean up
+
+The sorted copy has done its work:
+
+```bash
+rm -f statistics_and_skipping.parquet
+```

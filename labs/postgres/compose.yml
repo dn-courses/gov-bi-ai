@@ -1,0 +1,85 @@
+# Postgres lab: adds a PostgreSQL 18 sidecar seeded with the Pagila dataset and the `shop` database.
+# Merged over labs/base/compose.yml:  docker compose -f labs/base/compose.yml -f labs/postgres/compose.yml up
+#
+# Both datasets auto-seed on every fresh start: postgres runs every *.sql in
+# /docker-entrypoint-initdb.d/ (in filename order: Pagila's schema and data, then 50-shop.sql,
+# 60-talk.sh, then the extensions) against a temporary server that listens on its unix socket only, BEFORE opening
+# external connections. The healthcheck asks over TCP, so it passes only once seeding is done.
+# `shop` (20 million generated rows, ~1.4 GB) takes about 35 s of that. 60-talk.sh adds the `twins`
+# database (~5.5 GB, about 2 minutes more) only when SEED_TALK_DATA=1, which compose.app.yml sets.
+# No restore step needed.
+#
+# Two deliberate choices that make this robust for students:
+#   * NO persistent named volume — PGDATA lives in the container layer, so every `down && up`
+#     re-initializes and re-seeds a clean dataset. Avoids the classic foot-gun where a volume
+#     initialized once (e.g. before the seed was fetched) makes postgres "ignore initdb.d" forever.
+#   * seed mount is `../postgres/seed`, NOT `./seed`. Compose resolves relative bind-mount paths
+#     against the PROJECT directory (the first `-f` file's dir = labs/base/), not this file's dir.
+#     `../postgres/seed` therefore resolves to labs/postgres/seed regardless of cwd.
+
+services:
+  workspace:
+    build:
+      args:
+        LAB: postgres
+    environment:
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/pagila
+      - PGHOST=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGDATABASE=pagila
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    # No fixed container_name (see labs/base/compose.yml). Other services reach this one by its
+    # compose service name `postgres` (DNS on the default network), which is independent of the
+    # container name — e.g. DATABASE_URL=...@postgres:5432 below.
+    image: postgres:18
+    # Docker's default /dev/shm is 64 MB. Postgres hands parallel work (index builds, parallel vacuum,
+    # parallel hash joins) between processes through it, and a task on wide keys outgrew it with
+    # "could not resize shared memory segment ... No space left on device".
+    shm_size: 256mb
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: pagila
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ../postgres/seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Over TCP (-h), not the default unix socket: during seeding the server answers on the socket
+      # and would report ready with half the data loaded.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d pagila"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  postgres-admin:
+    # pgAdmin, for writing SQL against Pagila in a browser (Query Tool) next to psql / jupysql. Same
+    # pattern as labs/dbt's `analytics-admin`: no login screen (desktop mode) and the `postgres` server
+    # pre-registered from pgadmin-servers.json, password included. That is only acceptable because this
+    # is a disposable local lab with a well-known password; do not copy the pattern anywhere real.
+    # The servers file is imported on pgAdmin's FIRST start, which with no volume here is every start.
+    image: dpage/pgadmin4:9.18
+    environment:
+      PGADMIN_DEFAULT_EMAIL: lab@example.com
+      PGADMIN_DEFAULT_PASSWORD: lab
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # servers.json cannot carry a password; it can carry a command that prints one.
+      PGADMIN_CONFIG_ENABLE_SERVER_PASS_EXEC_CMD: "True"
+    volumes:
+      # ../postgres/, not ./ — relative paths resolve against labs/base/ (see the seed mount above).
+      - ../postgres/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    ports:
+      # 5051, not pgAdmin's customary 5050: labs/dbt's admin UI holds that one.
+      - "${POSTGRES_ADMIN_PORT:-5051}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped

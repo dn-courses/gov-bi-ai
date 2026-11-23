@@ -1,0 +1,90 @@
+version: 1
+project:
+  title: Cloud Data & AI Agents for BI Developers
+  jupyter:
+    server:
+      url: http://localhost:8888/
+      token: local-dev
+    kernelName: python3
+  exclude:
+  - '**/_build/**'
+  - '**/artifacts/**'
+  - '**/hands-on/**'
+  - '**/labs/**'
+  - '**/exercises/**'
+  - '**/projects/**'
+  - '**/examples/**'
+  - '**/sandbox/**'
+  - '**/scripts/**'
+  - '**/.claude/**'
+  - '**/CLAUDE.md'
+  toc:
+  - title: Data in the Cloud
+    children:
+    - title: Foundations
+      children:
+      - file: materials/data-in-the-cloud/foundations/docker/README.md
+        children:
+        - file: materials/data-in-the-cloud/foundations/docker/01-why-containers.md
+      - file: materials/data-in-the-cloud/foundations/git/README.md
+        children:
+        - file: materials/data-in-the-cloud/foundations/git/02-basic-commands.md
+    - title: Cloud Concepts
+      children:
+      - file: materials/data-in-the-cloud/cloud-concepts/cloud-concepts/README.md
+        children:
+        - file: materials/data-in-the-cloud/cloud-concepts/cloud-concepts/01-what-is-the-cloud.md
+        - file: materials/data-in-the-cloud/cloud-concepts/cloud-concepts/02-service-models.md
+      - file: materials/data-in-the-cloud/cloud-concepts/cloud-dbs-sql/README.md
+        children:
+        - file: materials/data-in-the-cloud/cloud-concepts/cloud-dbs-sql/07-governance-and-security.md
+    - file: materials/data-in-the-cloud/data-warehousing/README.md
+      children:
+      - file: materials/data-in-the-cloud/data-warehousing/01-oltp-vs-olap.md
+      - file: materials/data-in-the-cloud/data-warehousing/04-star-vs-snowflake.md
+    - file: materials/data-in-the-cloud/columnar-mpp/README.md
+      children:
+      - file: materials/data-in-the-cloud/columnar-mpp/01-disk-memory-cpu.md
+      - file: materials/data-in-the-cloud/columnar-mpp/02-rows-and-columns.md
+      - file: materials/data-in-the-cloud/columnar-mpp/03-encoding-and-compression.md
+      - file: materials/data-in-the-cloud/columnar-mpp/04-statistics-and-skipping.md
+      - file: materials/data-in-the-cloud/columnar-mpp/05-partitioning.md
+      - file: materials/data-in-the-cloud/columnar-mpp/06-vectorized-execution.md
+      - file: materials/data-in-the-cloud/columnar-mpp/07-mpp.md
+      - file: materials/data-in-the-cloud/columnar-mpp/08-cost-and-comparison.md
+      - file: materials/data-in-the-cloud/columnar-mpp/09-task-dashboard-layout.md
+  - title: AI Agent Development
+    children:
+    - file: materials/ai-agent-development/agents/README.md
+      children:
+      - file: materials/ai-agent-development/agents/00-what-is-an-llm.md
+      - file: materials/ai-agent-development/agents/01-llm-as-api.md
+      - file: materials/ai-agent-development/agents/02-from-completion-to-agent.md
+      - file: materials/ai-agent-development/agents/03-what-were-building.md
+      - file: materials/ai-agent-development/agents/04-the-loop-in-code.md
+      - file: materials/ai-agent-development/agents/06-designing-tools.md
+      - file: materials/ai-agent-development/agents/06b-tools-on-the-database.md
+      - file: materials/ai-agent-development/agents/07-structured-outputs.md
+      - file: materials/ai-agent-development/agents/08-seeing-why-it-chose.md
+      - file: materials/ai-agent-development/agents/16-system-prompt-for-sql.md
+      - file: materials/ai-agent-development/agents/17-end-to-end-walkthrough.md
+      - file: materials/ai-agent-development/agents/19-hands-on-the-data-agent.md
+      - file: materials/ai-agent-development/agents/19b-why-free-sql-is-not-production.md
+      - file: materials/ai-agent-development/agents/25-guards.md
+      - file: materials/ai-agent-development/agents/12-what-is-mcp.md
+      - file: materials/ai-agent-development/agents/20-conversation-history.md
+      - file: materials/ai-agent-development/agents/22-prompt-caching.md
+      - file: materials/ai-agent-development/agents/29-adk.md
+      - file: materials/ai-agent-development/agents/30a-task-2-the-warehouse-agent.md
+      - file: materials/ai-agent-development/agents/30b-task-2-deploy-the-agent.md
+      - file: materials/ai-agent-development/agents/30-evals-and-observability.md
+      - file: materials/ai-agent-development/agents/31b-from-proof-of-concept-to-production.md
+      - file: materials/ai-agent-development/agents/28-patterns.md
+      - file: materials/ai-agent-development/agents/26-embeddings.md
+      - file: materials/ai-agent-development/agents/35-a-team-of-agents.md
+site:
+  template: https://github.com/myst-templates/book-theme/archive/23f2df5493e23dfb1d9433c8aa64c87beb4232a3.zip
+  title: Cloud Data & AI Agents for BI Developers
+  projects:
+  - path: .
+    slug: gov-bi-ai

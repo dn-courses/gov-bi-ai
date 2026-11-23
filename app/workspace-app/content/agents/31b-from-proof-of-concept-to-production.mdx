@@ -1,0 +1,174 @@
+export const meta = { title: "From Proof of Concept to Production", minutes: 25, database: "shop" };
+
+The instructor's service `agent-preview` answers from Cloud Run, on real data: the shop agent of the
+semantic-layer pages, over the `shop_mart` dataset in BigQuery. Before anyone else uses an agent
+like it, two questions need an answer: whose identity does it run as, and who may call it?
+
+## Where it runs, and as whom
+
+<Scene widget="ag7-runs-as">
+<Step>
+</Step>
+<Step>
+
+When you ask "what can this agent do?", read the runtime account's roles. Every right the agent uses
+is one of them.
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Who may call it
+
+Cloud Run checks every request before your code sees it. The instructor sends two requests to
+`agent-preview`, one with no token and one with an identity token, and you follow on the projector:
+the answers recorded on 2026-11-23 were 403, then 200. Run the two cells with your own account and
+you get 403 both times, because no one has granted your account the right to invoke the service.
+
+<Scene widget="ag7-callers">
+<Step>
+
+```python manual id=no-token
+import urllib.error, urllib.request
+
+URL = "https://agent-preview-5sjqaty6ga-zf.a.run.app"   # the instructor's service
+
+
+def status(path, token=None):
+    """The HTTP status Cloud Run answers for a GET, with or without an identity token."""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(URL + path, headers=headers), timeout=60) as answer:
+            return answer.status
+    except urllib.error.HTTPError as refused:
+        return refused.code
+
+
+print("no token:  ", status("/list-apps"))
+```
+
+</Step>
+<Step>
+
+```python manual needs=no-token
+import google.auth.transport.requests
+from google.oauth2 import id_token
+
+token = id_token.fetch_id_token(google.auth.transport.requests.Request(), URL)   # audience: the URL
+print("with token:", status("/list-apps", token))
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+The invoker role decides who may *reach* the agent. It says nothing about what the agent reads for
+that person once the request is in.
+
+## What it may read, per person
+
+<Scene widget="ag7-rows">
+<Step>
+</Step>
+<Step>
+
+Task 2 had this shape: its cell sent `"user_id": "me"` to `POST /run`. That is a label the caller
+chooses, not an identity.
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+The value must come from the verified sign-in, never from the conversation, and a statement check
+that refuses `SET` must stay in front of any SQL the model writes.
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+Every warehouse has the mechanism under its own name:
+
+<table>
+<thead><tr><th>Warehouse</th><th>Rows</th><th>Columns</th></tr></thead>
+<tbody>
+<tr><td>BigQuery</td><td>row access policies: a filter per grantee, which can use <code>SESSION_USER()</code>; anyone no policy names sees no rows</td><td>policy tags, and dynamic data masking</td></tr>
+<tr><td>PostgreSQL</td><td>row-level security: <code>CREATE POLICY</code> on <code>current_user</code> or on a session value the application sets</td><td><code>GRANT SELECT</code> on named columns</td></tr>
+<tr><td>SQL Server</td><td>a security policy with a predicate function; for one application account it reads <code>SESSION_CONTEXT</code></td><td>column permissions, dynamic data masking</td></tr>
+<tr><td>Oracle</td><td>Virtual Private Database (<code>DBMS_RLS</code>)</td><td>Data Redaction (<code>DBMS_REDACT</code>)</td></tr>
+</tbody>
+</table>
+
+Check who is exempt: a PostgreSQL superuser always bypasses the rules, and a table owner does too
+unless the table is `FORCE ROW LEVEL SECURITY`. A copy of the data in a table with no rule is a way
+around it.
+
+## Personal data in the trace
+
+A trace holds every prompt and every tool result: that is why it is useful, and why a trace of a real
+conversation is personal data. In production, turn message content off
+(`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`, or OpenInference's `OPENINFERENCE_HIDE_INPUTS` and
+`OPENINFERENCE_HIDE_OUTPUTS`) or restrict who may read the traces, and remember that whatever the
+service prints lands in the project's logs.
+
+## Where the data and the model are
+
+<Scene widget="ag7-where">
+<Step>
+</Step>
+<Step>
+
+The lab calls the model the same way:
+
+```python standalone
+import os
+
+print("location:", os.environ.get("GOOGLE_CLOUD_LOCATION"), "| model:", os.environ.get("GEMINI_MODEL"))
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+The provider's offer changes often: check the locations page on the day you decide.
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## What to ask for
+
+You need five things from other people, asked for precisely.
+
+<table>
+<thead><tr><th>Ask for</th><th>Of whom</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><b>(a)</b> A model endpoint reachable from where the code runs, and a service account allowed to call it</td><td>the cloud platform team; security, for the location</td><td>The agent calls the model on every turn. A service account replaces a personal login or a key file.</td></tr>
+<tr><td><b>(b)</b> <code>google-genai</code>, <code>google-adk</code> and a database driver from an approved package index</td><td>whoever runs the package mirror</td><td>Building the image runs <code>pip install</code>; many networks cannot reach the public index.</td></tr>
+<tr><td><b>(c)</b> Read access for that account to a small, documented slice of the warehouse</td><td>the warehouse owner, and the data's owner</td><td>The account's rights are every caller's rights.</td></tr>
+<tr><td><b>(d)</b> Somewhere to run a container with its own identity, private by default</td><td>the cloud platform team</td><td>No key file, and the list of who may call it is set there.</td></tr>
+<tr><td><b>(e)</b> A place for traces, with message content off or access restricted</td><td>the platform team, and security</td><td>The steps contain prompts and results.</td></tr>
+</tbody>
+</table>
+
+On another provider the five requests stay the same; the names change.
+
+<table>
+<thead><tr><th></th><th>Google Cloud</th><th>AWS</th><th>Azure</th></tr></thead>
+<tbody>
+<tr><td><b>(a)</b> model and caller</td><td>Gemini Enterprise Agent Platform (formerly Vertex AI); <i>Agent Platform User</i></td><td>Amazon Bedrock; an IAM role allowed to invoke the model</td><td>Microsoft Foundry; a managed identity with a Foundry role</td></tr>
+<tr><td><b>(b)</b> package index</td><td>Artifact Registry, remote repository for PyPI</td><td>CodeArtifact, external connection to PyPI</td><td>Azure Artifacts, PyPI as upstream</td></tr>
+<tr><td><b>(c)</b> a slice</td><td><i>BigQuery Data Viewer</i> on one dataset, <i>Job User</i> on the project</td><td colspan="2">the warehouse's own grant on a schema of views</td></tr>
+<tr><td><b>(d)</b> a container with an identity</td><td>Cloud Run, runtime service account</td><td>ECS on Fargate, task IAM role</td><td>Container Apps, managed identity</td></tr>
+<tr><td><b>(e)</b> traces</td><td>Cloud Trace</td><td>X-Ray, CloudWatch</td><td>Application Insights</td></tr>
+</tbody>
+</table>

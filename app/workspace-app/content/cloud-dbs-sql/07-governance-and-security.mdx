@@ -1,0 +1,133 @@
+export const meta = { title: "Governance and Security for Cloud Analytics", minutes: 22, database: "pagila" };
+
+Whichever service model holds the data, one job stays with you: who sees which rows, which
+columns, and what is written down when they look.
+
+BigQuery is the concrete engine in the pictures. Two of the layers exist in the Postgres beside
+this page as well, so those two are run live.
+
+<Scene widget="cdb-layers">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The same control in Postgres, on the `customer` table: one office may see its own store's rows.
+Predict what `office_2`, which no policy names, will see. Everything is rolled back at the end.
+
+```sql
+BEGIN;
+CREATE ROLE office_1;
+CREATE ROLE office_2;
+GRANT SELECT ON customer TO office_1, office_2;
+ALTER TABLE customer ENABLE ROW LEVEL SECURITY;
+CREATE POLICY store_1_only ON customer TO office_1 USING (store_id = 1);
+
+SET LOCAL ROLE office_1;
+SELECT 'office_1' AS who, store_id, count(*) FROM customer GROUP BY store_id;
+SET LOCAL ROLE office_2;
+SELECT 'office_2' AS who, count(*) AS rows_visible FROM customer;
+SET LOCAL ROLE postgres;
+ROLLBACK;
+```
+
+</Step>
+<Step>
+
+Postgres and Redshift restrict columns with a grant on the columns themselves; BigQuery uses the
+tag in the picture. What happens to the query is the same. A team that may read four columns:
+
+```sql
+BEGIN;
+CREATE ROLE dashboard_team;
+GRANT SELECT (customer_id, store_id, activebool, create_date) ON customer TO dashboard_team;
+SET LOCAL ROLE dashboard_team;
+SELECT store_id, count(*) AS customers FROM customer GROUP BY store_id ORDER BY store_id;
+```
+
+The same team, the habitual way:
+
+```sql expect=error
+SELECT * FROM customer LIMIT 3;
+```
+
+Put the session back:
+
+```sql
+ROLLBACK;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## A hash is not a mask
+
+<Scene widget="cdb-hash">
+<Step>
+</Step>
+<Step>
+
+An invented identity number, hashed as the analyst would see it, and then found again by trying
+numbers in order. Read the last line it prints.
+
+```python
+import hashlib, time
+
+def israeli_id(first_eight: int) -> str:
+    """Nine digits: eight chosen, the ninth a check digit computed from them."""
+    digits = f"{first_eight:08d}"
+    total = 0
+    for i, ch in enumerate(digits):
+        n = int(ch) * (1 + i % 2)
+        total += n if n < 10 else n - 9
+    return digits + str((10 - total % 10) % 10)
+
+masked = hashlib.sha256(israeli_id(1234567).encode()).hexdigest()   # what the masked column shows
+print("the analyst sees:", masked[:32], "…")
+
+start = time.perf_counter()
+for n in range(2_000_000):
+    candidate = israeli_id(n)
+    if hashlib.sha256(candidate.encode()).hexdigest() == masked:
+        break
+took = time.perf_counter() - start
+print(f"recovered {candidate} after {n + 1:,} guesses in {took:.1f} s")
+print(f"all 100,000,000 valid numbers at this speed, on one core: about {took / (n + 1) * 1e8 / 60:.1f} minutes")
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Around the layers
+
+<Scene widget="cdb-around">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Decide
+
+1. `payroll` has a row access policy for `hr-east` with `region = 'EAST'`, and its `national_id`
+   column carries a tag only `hr-leads` may read. A member of `hr-east` who is not an `hr-lead` runs
+   `SELECT * FROM payroll`. What happens, and which layer produces each part of your answer?
+2. The fraud team must count distinct citizens and join `citizens` to a benefits table, and must
+   never be able to learn a real identity number. A junior dashboard team must not see the column at
+   all. Which control for each? For the fraud team, why is the SHA-256 rule not enough?
+3. A transparency team needs case counts per region and must have no access to `raw.case_files`.
+   Which objects do you create and which two grants do you make? What stops them widening the query?
+4. Six months ago someone read a restricted table. Where is the record of who and when, and why is
+   it there even if nobody configured logging? The query succeeded although the table had a row
+   policy: name two ways a layer could have been left open.

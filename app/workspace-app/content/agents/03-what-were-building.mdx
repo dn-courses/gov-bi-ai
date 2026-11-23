@@ -1,0 +1,46 @@
+export const meta = { title: "What We Are Building", minutes: 5, database: "pagila" };
+
+The running example of this part: an agent you ask about a database in plain English.
+
+<Scene widget="ag1-pagila">
+<Step>
+</Step>
+<Step>
+
+```sql
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+  AND table_name NOT LIKE 'payment_p%'   -- the monthly partitions of payment
+ORDER BY table_name;
+```
+
+</Step>
+<Step>
+
+```sql
+SELECT count(*) AS films FROM film;
+```
+
+```sql
+SELECT c.first_name, c.last_name, sum(p.amount) AS total
+FROM customer c
+JOIN payment p USING (customer_id)
+GROUP BY c.customer_id, c.first_name, c.last_name
+ORDER BY total DESC
+LIMIT 3;
+```
+
+```sql
+SELECT a.first_name, a.last_name, count(*) AS films
+FROM actor a
+JOIN film_actor fa USING (actor_id)
+GROUP BY a.actor_id, a.first_name, a.last_name
+ORDER BY films DESC
+LIMIT 3;
+```
+
+</Step>
+</Scene>
+
+Keep the three answers. The agent will be checked against them.

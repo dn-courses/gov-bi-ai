@@ -1,0 +1,64 @@
+{
+  "course": "gov-bi-ai",
+  "master_sha": "3bd9d96c637c896cfb0d667b7e2b697ba4154ff1",
+  "modules": {
+    "docker": {
+      "effective_level": "minimal",
+      "content_hash": "2e504d992498f9331a61371494e22ad0e5e1ea8d03d3c38dc941d0f05d1582a6"
+    },
+    "git": {
+      "effective_level": "minimal",
+      "content_hash": "cd7c132dbf9dc4197c59fe513a07b73ec92de5e83d5e16de91ca1439bb9134aa"
+    },
+    "cloud-concepts": {
+      "effective_level": "minimal",
+      "content_hash": "ecde14d1f5b91bea2bfa5a2a4565914d1d29e6664999762d4ece1ee8425f1062"
+    },
+    "cloud-dbs-sql": {
+      "effective_level": "advanced",
+      "content_hash": "63a7d0bf4ea3fd84f7cc647e46887abceca2e4a2000af08b2a134ed8e2ebe2e7"
+    },
+    "data-warehousing": {
+      "effective_level": "moderate",
+      "content_hash": "801787a26ac5e98548d43b01e7e52a3422c4809304108b7a86985e6dd15ffcf0"
+    },
+    "columnar-mpp": {
+      "effective_level": "moderate",
+      "content_hash": "9509168933b96e10ac5957ea7968c615937c1dcb436d4aa80c6be98e9b4ae3a0"
+    },
+    "agents": {
+      "effective_level": "advanced",
+      "content_hash": "1a1a13828de90ba18001f5bbe40de37b6d7ae34062e2dc0e2f24f057ca2e8b42"
+    }
+  },
+  "projects": [],
+  "stages": [],
+  "labs": [
+    "agents",
+    "postgres"
+  ],
+  "examples": [],
+  "sandbox": [],
+  "warnings": [
+    "materials/data-in-the-cloud/foundations/docker/README.md: neutralized link -> 02-images-and-containers.md",
+    "materials/data-in-the-cloud/foundations/docker/README.md: neutralized link -> 03-volumes-and-ports.md",
+    "materials/data-in-the-cloud/foundations/docker/README.md: neutralized link -> 04-building-images.md",
+    "materials/data-in-the-cloud/foundations/docker/README.md: neutralized link -> 05-docker-compose.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 01-introduction.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 03-viewing-history.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 04-gitignore.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 05-undoing-changes.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 06-branching.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 07-merging-and-conflicts.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 08-remotes.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 09-collaboration-and-prs.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 10-history-and-search.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 11-git-in-your-editor.md",
+    "materials/data-in-the-cloud/foundations/git/README.md: neutralized link -> 07b-exercises-branch-and-merge.md",
+    "materials/data-in-the-cloud/foundations/docker/01-why-containers.md: neutralized link -> 02-images-and-containers.md",
+    "materials/data-in-the-cloud/foundations/git/02-basic-commands.md: neutralized link -> 03-viewing-history.md",
+    "materials/data-in-the-cloud/cloud-concepts/cloud-concepts/02-service-models.md: neutralized link -> 03-deployment-models.md",
+    "materials/data-in-the-cloud/data-warehousing/01-oltp-vs-olap.md: neutralized link -> 02-the-warehouse-is-an-architecture.md",
+    "materials/data-in-the-cloud/data-warehousing/04-star-vs-snowflake.md: neutralized link -> 05-slowly-changing-dimensions.md"
+  ]
+}

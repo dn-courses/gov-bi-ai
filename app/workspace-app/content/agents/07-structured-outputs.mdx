@@ -1,0 +1,158 @@
+export const meta = { title: "Answers Code Can Use", minutes: 12, database: "pagila" };
+
+A model's answer is text. The moment code has to act on it, the text needs a shape the code can
+rely on.
+
+<Scene widget="agb-prose">
+<Step>
+
+Three facts from Pagila, put in the prompt, and one call:
+
+```python id=setup
+import os, re
+
+import psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    top = conn.execute("""SELECT c.customer_id, c.first_name || ' ' || c.last_name AS name, sum(p.amount) AS total
+                          FROM payment p JOIN customer c USING (customer_id)
+                          GROUP BY 1, 2 ORDER BY total DESC LIMIT 3""").fetchall()
+FACTS = "\n".join(f"customer {cid}: {name}, {total} dollars" for cid, name, total in top)
+QUESTION = f"Payments per customer, the top three:\n{FACTS}\n\nWho spent the most, and how much?"
+
+
+def ask(**settings):
+    return client.models.generate_content(model=MODEL, contents=QUESTION, config=types.GenerateContentConfig(**settings))
+
+
+print(ask().text)
+```
+
+</Step>
+<Step>
+
+A pattern written to fit one recorded sentence. Edit it to fit yours:
+
+```python
+PATTERN = r"\*\*([A-Z ]+)\*\* \(Customer (\d+)\) spent the most, with a total of \*\*([\d.]+) dollars\*\*"
+answer = ask().text
+print(answer)
+print("the pattern finds:", re.findall(PATTERN, answer))
+```
+
+</Step>
+<Step>
+
+Five more asks. Count the lines where the pattern finds nothing:
+
+```python
+for _ in range(5):
+    answer = ask().text.replace("\n", " ")
+    print(f"{str(re.findall(PATTERN, answer)):<34} {answer[:90]}")
+```
+
+</Step>
+</Scene>
+
+## A schema the model must follow
+
+<Scene widget="agb-schema">
+<Step>
+
+The shape, as a Pydantic class, and the JSON Schema the SDK makes of it:
+
+```python
+import json
+
+from pydantic import BaseModel
+
+
+class TopSpender(BaseModel):
+    customer_id: int
+    name: str
+    total: float
+
+
+print(json.dumps(TopSpender.model_json_schema(), indent=2))
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+A question with no customer in it, asked with the same schema:
+
+```python
+reply = client.models.generate_content(model=MODEL, contents="How many films are rated PG?",
+                                       config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=TopSpender))
+print(reply.text)
+```
+
+</Step>
+<Step>
+
+```python
+reply = ask(response_mime_type="application/json", response_schema=TopSpender)
+print(reply.text)
+spender = reply.parsed
+print(type(spender).__name__, spender)
+print("customer_id matches:", spender.customer_id == top[0][0], "| total matches:", spender.total == float(top[0][2]))
+```
+
+</Step>
+</Scene>
+
+## How a call ends
+
+<Scene widget="agb-ends">
+<Step>
+
+One function that names the ending, and three calls with the same schema: plain, with a tool the
+model may ask for, and with the output cut at 8 tokens.
+
+```python
+LOOKUP = types.FunctionDeclaration(name="customer_rentals", description="Count the rentals of one customer, by customer id.",
+    parameters_json_schema={"type": "object", "properties": {"customer_id": {"type": "integer"}}, "required": ["customer_id"]})
+
+
+def ending(reply):
+    """Which of the three ways this call ended."""
+    if not reply.candidates:
+        return f"stopped before it began: {reply.prompt_feedback.block_reason}"
+    finish = reply.candidates[0].finish_reason
+    if reply.function_calls:
+        call = reply.function_calls[0]
+        return f"a tool call: {call.name}({call.args})"
+    if finish != types.FinishReason.STOP:
+        return f"a stop: {finish.name}, text so far {reply.text!r}"
+    return f"an answer: {reply.parsed!r}"
+
+
+SCHEMA = dict(response_mime_type="application/json", response_schema=TopSpender)
+TOOL = dict(tools=[types.Tool(function_declarations=[LOOKUP])],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+print("schema           ->", ending(ask(**SCHEMA)))
+print("schema + a tool  ->", ending(client.models.generate_content(
+    model=MODEL, contents=QUESTION + "\nAlso: how many rentals has the top one made?",
+    config=types.GenerateContentConfig(**SCHEMA, **TOOL))))
+print("schema, 8 tokens ->", ending(ask(**SCHEMA, max_output_tokens=8)))
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+A tool's arguments are held to its declaration the same way when the calling mode says so:
+`types.FunctionCallingConfig(mode="VALIDATED")` constrains the model to a function call or plain
+text, and, from Gemini 3, makes it send every required parameter.

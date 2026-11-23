@@ -1,0 +1,5 @@
+# Settings only — this package is standalone, not a workspace.
+# esbuild (via vite/vitest/tsx) has a postinstall that only verifies its platform binary, which
+# arrives as an optional dependency; nothing here needs it, so it stays blocked.
+allowBuilds:
+  esbuild: false

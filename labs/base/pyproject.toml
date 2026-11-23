@@ -1,0 +1,26 @@
+[project]
+name = "lab-base"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "jupyterlab",
+    "jupyter_server",
+    "ipykernel",
+    # Universal "do"-surface test infra: `just check` runs pytest over /workspace/hands-on
+    # for every course, including lab-less ones (no DB sidecar). pyyaml grades config-file
+    # exercises (e.g. authoring a docker compose.yml). DB labs layer their own clients on top.
+    "pytest",
+    "pyyaml",
+    # LLM client libraries live HERE rather than in a lab, because a lab is a *dependency axis*:
+    # `labs/base/Dockerfile` installs `labs/${LAB}/pyproject.toml`, and LAB is base for `just docs`
+    # and for the devcontainer. Any course whose lessons or exercises call a model therefore needs
+    # these on every entry path, or `just docs` after `just lab <something>` silently rebuilds the
+    # image without them and the next cell dies on ModuleNotFoundError. They cost a few MB in the
+    # shared image; a database does not move here, because a database is a real sidecar service.
+    "openai>=1.54",
+    "tiktoken>=0.8",
+    # Majors of `mcp` rename the server class out from under the MCP lessons — 2.0 replaced
+    # `FastMCP` with `MCPServer`, which is a `ModuleNotFoundError` in a printed code cell, not a
+    # deprecation warning. Pinned to the major the lessons are written against.
+    "mcp>=2.0,<3",
+]

@@ -1,0 +1,50 @@
+# The lesson app, as this stack's `workspace` — for a course presented from it (`app:` in course.yml).
+# Merged LAST by the generated `just present <lab>`:
+#   docker compose -f labs/base/compose.yml -f labs/<lab>/compose.yml -f labs/base/compose.app.yml up -d workspace
+#
+# It keeps the service name on purpose. Every lab's compose.yml configures `workspace` — its
+# environment, what it waits for — so a lab needs nothing of its own to host the app: what it gives
+# the MyST workspace, it gives the app. `up … workspace` starts the app and what the lab says it
+# depends on, and none of the lab's optional tools (pgAdmin and the like).
+#
+# `!override` replaces a list instead of appending to it: the app wants neither the MyST and Jupyter
+# ports nor the repo and docker-socket mounts. The build context is the built course's `app/`
+# directory; like every path here it resolves against labs/base/, the compose project directory.
+
+services:
+  workspace:
+    # The course's published image when it has one (`app: {image: …}` in course.yml; `just present`
+    # exports it and pulls). With none, the image is built from the course's own `app/` folder
+    # under this name.
+    image: ${APP_IMAGE:-lesson-app:local}
+    build: !override
+      context: ../../app
+      dockerfile: workspace-app/Dockerfile
+    command: ["bash", "server/start.sh"]
+    working_dir: /app/workspace-app
+    ports: !override
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      # Which lab is running beside the app (`just present <lab>` sets it). A page that needs
+      # another lab says so instead of failing on its first cell.
+      - LAB=${APP_LAB:-}
+      # `bigquery` cells: a key file the student drops into the course's `secrets/` folder
+      # (gitignored). Without one those cells say how to connect; everything else runs.
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/bigquery-key.json
+    volumes: !override
+      - ../../secrets:/secrets:ro
+      # The page sources, over the copies in the image: a pull brings new pages without a new
+      # image, and the app rebuilds them once at its next start (workspace-app/server/pages.ts).
+      # Mounted piece by piece: mounting the whole folder would hide the image's node_modules.
+      - ../../app/workspace-app/content:/app/workspace-app/content:ro
+      - ../../app/workspace-app/src:/app/workspace-app/src:ro
+      - ../../app/workspace-app/widgets:/app/workspace-app/widgets:ro
+      - ../../app/workspace-app/public:/app/workspace-app/public:ro
+      - ../../app/workspace-app/index.html:/app/workspace-app/index.html:ro
+      - ../../app/widgets:/app/widgets:ro
+      # The files cells write (a page's Parquet files are read by the pages after it). A named
+      # volume, so they survive the app being rebuilt or restarted between sessions.
+      - app-work:/work
+
+volumes:
+  app-work:

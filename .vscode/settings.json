@@ -1,0 +1,6 @@
+{
+  "files.watcherExclude": {
+    "**/hands-on/**": true,
+    "**/_build/**": true
+  }
+}

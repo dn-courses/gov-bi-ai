@@ -1,0 +1,87 @@
+{
+  "title": "Cloud Data & AI Agents for BI Developers",
+  "parts": [
+    "docker",
+    "git",
+    "cloud-concepts",
+    "cloud-dbs-sql",
+    "data-warehousing",
+    "columnar-mpp",
+    "agents"
+  ],
+  "sections": [
+    {
+      "title": "Data in the Cloud",
+      "modules": [
+        "docker",
+        "git",
+        "cloud-concepts",
+        "cloud-dbs-sql",
+        "data-warehousing",
+        "columnar-mpp"
+      ],
+      "groups": [
+        {
+          "title": "Foundations",
+          "modules": [
+            "docker",
+            "git"
+          ]
+        },
+        {
+          "title": "Cloud Concepts",
+          "modules": [
+            "cloud-concepts",
+            "cloud-dbs-sql"
+          ]
+        },
+        {
+          "modules": [
+            "data-warehousing"
+          ]
+        },
+        {
+          "modules": [
+            "columnar-mpp"
+          ]
+        }
+      ]
+    }
+  ],
+  "labs": {
+    "columnar-mpp/01-disk-memory-cpu": "postgres",
+    "columnar-mpp/02-rows-and-columns": "postgres",
+    "columnar-mpp/03-encoding-and-compression": "postgres",
+    "columnar-mpp/04-statistics-and-skipping": "postgres",
+    "columnar-mpp/05-partitioning": "postgres",
+    "columnar-mpp/06-vectorized-execution": "postgres",
+    "columnar-mpp/07-mpp": "postgres",
+    "columnar-mpp/08-cost-and-comparison": "postgres",
+    "columnar-mpp/09-task-dashboard-layout": "postgres",
+    "agents/00-what-is-an-llm": "agents",
+    "agents/01-llm-as-api": "agents",
+    "agents/02-from-completion-to-agent": "agents",
+    "agents/03-what-were-building": "agents",
+    "agents/04-the-loop-in-code": "agents",
+    "agents/06-designing-tools": "agents",
+    "agents/06b-tools-on-the-database": "agents",
+    "agents/07-structured-outputs": "agents",
+    "agents/08-seeing-why-it-chose": "agents",
+    "agents/16-system-prompt-for-sql": "agents",
+    "agents/17-end-to-end-walkthrough": "agents",
+    "agents/19-hands-on-the-data-agent": "agents",
+    "agents/19b-why-free-sql-is-not-production": "agents",
+    "agents/25-guards": "agents",
+    "agents/12-what-is-mcp": "agents",
+    "agents/20-conversation-history": "agents",
+    "agents/22-prompt-caching": "agents",
+    "agents/29-adk": "agents",
+    "agents/30a-task-2-the-warehouse-agent": "agents",
+    "agents/30b-task-2-deploy-the-agent": "agents",
+    "agents/30-evals-and-observability": "agents",
+    "agents/31b-from-proof-of-concept-to-production": "agents",
+    "agents/28-patterns": "agents",
+    "agents/26-embeddings": "agents",
+    "agents/35-a-team-of-agents": "agents"
+  }
+}

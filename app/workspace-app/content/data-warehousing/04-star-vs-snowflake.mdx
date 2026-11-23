@@ -1,0 +1,175 @@
+export const meta = { title: "Star Schema and History", minutes: 8, database: "shop", settings: { search_path: "mart" } };
+
+The same sales can be laid out in three shapes. The difference shows in one product's rows: where
+the word "Tools" is stored, and how far it is from the numbers.
+
+<Scene widget="dw-snowflake">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The product's row, as the star stores it:
+
+```sql
+SELECT * FROM dim_product WHERE product_key = 3555;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+
+```sql
+SELECT count(*) FILTER (WHERE category = 'Tools') AS tools_rows,
+       count(*)                                   AS product_rows
+FROM dim_product;
+```
+
+</Step>
+<Step>
+
+The same question asked of both shapes. The first statement builds the snowflake's two tables in
+its `WITH`, from `dim_product`:
+
+```sql
+WITH dim_category AS (       -- one row per category, numbered here
+  SELECT dense_rank() OVER (ORDER BY category) AS category_key, category
+  FROM (SELECT DISTINCT category FROM dim_product) AS c
+), dim_product_sf AS (       -- the product with its category moved out
+  SELECT p.product_key, p.name, c.category_key, p.list_cents
+  FROM dim_product p JOIN dim_category c ON c.category = p.category
+)
+SELECT c.category, round(sum(f.quantity * f.unit_cents) / 100.0, 2) AS revenue
+FROM dim_category c
+JOIN dim_product_sf p ON p.category_key = c.category_key
+JOIN fact_sales     f ON f.product_key  = p.product_key
+JOIN dim_date       d ON d.date_key     = f.date_key
+WHERE d.year = 2025 AND f.status <> 'pending'
+GROUP BY c.category
+ORDER BY revenue DESC
+LIMIT 3;
+
+SELECT p.category, round(sum(f.quantity * f.unit_cents) / 100.0, 2) AS revenue
+FROM dim_product p
+JOIN fact_sales  f ON f.product_key = p.product_key
+JOIN dim_date    d ON d.date_key    = f.date_key
+WHERE d.year = 2025 AND f.status <> 'pending'
+GROUP BY p.category
+ORDER BY revenue DESC
+LIMIT 3;
+```
+
+</Step>
+</Scene>
+
+## The trade
+
+<table>
+<thead><tr><th></th><th>Classic relational</th><th>Snowflake</th><th>Star</th></tr></thead>
+<tbody>
+<tr><td>A category name is stored</td><td>once</td><td>once</td><td>on every product row of it</td></tr>
+<tr><td>Joins for revenue by category</td><td>3, through the order</td><td>3</td><td>2</td></tr>
+<tr><td>To write the query you must know</td><td>the transactional design</td><td>which table holds which word</td><td>that a word is a column of a dimension</td></tr>
+</tbody>
+</table>
+
+A snowflake is a sound relational design. The star accepts repetition because it lands in a
+dimension of ten thousand rows, while every question that slices by category pays for the
+snowflake's extra join.
+
+## Which measures add up
+
+<table>
+<thead><tr><th></th><th>Example</th><th>Sum it</th></tr></thead>
+<tbody>
+<tr><td>Additive</td><td>revenue, quantity</td><td>across everything</td></tr>
+<tr><td>Semi-additive</td><td>stock on hand, a balance</td><td>across things, never across time: take the last value or the average</td></tr>
+<tr><td>Non-additive</td><td>a ratio, a distinct count</td><td>never: store its additive parts and compute it at the level asked</td></tr>
+</tbody>
+</table>
+
+## State and history
+
+A customer moves country. The transactional side replaces one value; the analytical side decides
+what the move means for every report already run.
+
+<Scene widget="dw-history">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The two versions, and the version each of the customer's orders belongs to. The lab's fact holds
+the customer's id, so the query finds the version by the order's day; a Type 2 fact stores
+`customer_sk` and joins on it:
+
+```sql
+WITH type_2 AS (
+  SELECT customer_key AS customer_sk, customer_key AS customer_id, country,
+         date '2024-01-01' AS valid_from, date '2025-05-31' AS valid_to
+  FROM dim_customer WHERE customer_key = 21688
+  UNION ALL
+  SELECT 100001, 21688, 'Norway', date '2025-06-01', date '9999-12-31'
+)
+SELECT f.order_id, d.day, v.customer_sk, v.country,
+       round(sum(f.quantity * f.unit_cents) / 100.0, 2) AS revenue
+FROM fact_sales f
+JOIN dim_date d ON d.date_key = f.date_key
+JOIN type_2   v ON v.customer_id = f.customer_key AND d.day BETWEEN v.valid_from AND v.valid_to
+GROUP BY f.order_id, d.day, v.customer_sk, v.country
+ORDER BY f.order_id;
+```
+
+</Step>
+<Step>
+
+The 2024 report three ways: from the dimension as stored, and from a Type 1 and a Type 2 dimension
+built in the query:
+
+```sql
+WITH type_1 AS (            -- overwrite: one row per customer, holding today's country
+  SELECT customer_key,
+         CASE WHEN customer_key = 21688 THEN 'Norway' ELSE country END AS country
+  FROM dim_customer
+), type_2 AS (              -- a row per version: its own key, and the days it was true
+  SELECT customer_key AS customer_sk, customer_key AS customer_id, country,
+         date '2024-01-01' AS valid_from,   -- the first day the warehouse holds
+         CASE WHEN customer_key = 21688 THEN date '2025-05-31' ELSE date '9999-12-31' END AS valid_to
+  FROM dim_customer
+  UNION ALL
+  SELECT 100001, 21688, 'Norway', date '2025-06-01', date '9999-12-31'
+), sales_2024 AS (
+  SELECT f.customer_key, d.day, f.quantity * f.unit_cents AS cents
+  FROM fact_sales f JOIN dim_date d ON d.date_key = f.date_key
+  WHERE d.year = 2024 AND f.status <> 'pending'
+)
+SELECT country,
+       round(sum(cents) FILTER (WHERE shape = 'stored') / 100.0, 2) AS before_the_move,
+       round(sum(cents) FILTER (WHERE shape = 'type 1') / 100.0, 2) AS type_1,
+       round(sum(cents) FILTER (WHERE shape = 'type 2') / 100.0, 2) AS type_2
+FROM (
+  SELECT 'stored', c.country, s.cents FROM sales_2024 s JOIN dim_customer c USING (customer_key)
+  UNION ALL
+  SELECT 'type 1', c.country, s.cents FROM sales_2024 s JOIN type_1 c USING (customer_key)
+  UNION ALL
+  SELECT 'type 2', v.country, s.cents FROM sales_2024 s
+  JOIN type_2 v ON v.customer_id = s.customer_key AND s.day BETWEEN v.valid_from AND v.valid_to
+) AS report(shape, country, cents)
+WHERE country IN ('Sweden', 'Norway')
+GROUP BY country
+ORDER BY country;
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>

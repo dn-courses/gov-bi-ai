@@ -1,0 +1,18 @@
+# Written by the build from labs/<lab>/pyproject.toml. Do not edit.
+arize-phoenix-otel
+google-adk[eval]>=2.15
+google-genai>=2.20
+jupysql
+mcp>=1.0
+numpy>=2.0
+openai-agents>=0.0.6
+openai>=1.54
+openinference-instrumentation-google-adk
+pandas
+pandas>=2.2
+pgvector>=0.3
+psycopg[binary]>=3.2
+pytest
+pyyaml>=6
+sqlalchemy>=2.0
+tiktoken>=0.8

@@ -1,0 +1,5 @@
+*
+!widgets
+!workspace-app
+workspace-app/node_modules
+workspace-app/build

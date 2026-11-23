@@ -1,0 +1,21 @@
+[project]
+name = "lab-agents"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "google-genai>=2.20",
+    "google-adk[eval]>=2.15",
+    "arize-phoenix-otel",
+    "openinference-instrumentation-google-adk",
+    "pyyaml>=6",
+    "openai>=1.54",
+    "openai-agents>=0.0.6",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "mcp>=1.0",
+    "tiktoken>=0.8",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "jupysql",
+    "pytest",
+]

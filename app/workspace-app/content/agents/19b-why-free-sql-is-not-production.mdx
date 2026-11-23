@@ -1,0 +1,333 @@
+export const meta = { title: "Why Free SQL Is Not Production", minutes: 18, database: "shop" };
+
+An agent that writes its own SQL answers a new question in seconds. That is also why it is rarely
+what ships. Here is the same agent, seen from outside, and three things it cannot be made to promise.
+
+<Scene widget="ag6-opening">
+<Step>
+
+The agent: the loop, one tool `run_sql`, and a prompt that lists the `shop` star. It connects as
+`analyst_ro`, the role an agent gets on this warehouse.
+
+```python
+import os, psycopg
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+MODEL = os.environ["GEMINI_MODEL"]
+SHOP_URL = os.environ.get("SHOP_URL", "postgresql://analyst_ro:analyst_ro@postgres:5432/shop")
+
+SYSTEM = ("You answer questions about a shop's sales by querying PostgreSQL with run_sql. Tables (schema mart): "
+          "fact_sales(order_id, line_no, date_key, customer_key, product_key, status, quantity, unit_cents), "
+          "dim_product(product_key, name, category, list_cents), dim_customer(customer_key, country, region, signed_up), "
+          "dim_date(date_key, day, month_start, year, quarter, weekday). "
+          "Revenue = quantity*unit_cents/100.0, pending orders excluded.")
+RUN_SQL = types.FunctionDeclaration(
+    name="run_sql", description="Run one SQL query and return its rows.",
+    parameters_json_schema={"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]})
+
+
+def run_sql(sql):
+    try:
+        with psycopg.connect(SHOP_URL) as conn:
+            return {"rows": [[str(v) for v in row] for row in conn.execute(sql).fetchmany(20)]}
+    except Exception as e:
+        return {"error": str(e).splitlines()[0]}
+
+
+def config(system, declarations):
+    return types.GenerateContentConfig(
+        system_instruction=system, tools=[types.Tool(function_declarations=declarations)],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+def loop(question, cfg, tools, show=True, max_turns=6):
+    """Run every tool call the model asks for until it answers. Returns the calls and the answer."""
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    calls = []
+    for _ in range(max_turns):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=cfg)
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            answer = "".join(p.text or "" for p in reply.candidates[0].content.parts).strip()
+            if show: print("ANSWER:", answer)
+            return calls, answer
+        answers = []  # one response part per call, all in one message
+        for call in reply.function_calls:
+            result = tools[call.name](**call.args)
+            calls.append((call.name, dict(call.args)))
+            answers.append(types.Part.from_function_response(name=call.name, response=result))
+            if show: print(f"{call.name}:", " ".join(str(dict(call.args)).split()), "\n  ->", str(result)[:160], "\n")
+        history.append(types.Content(role="user", parts=answers))
+    return calls, None
+
+
+FREE_SQL = config(SYSTEM, [RUN_SQL])
+
+def ask(question, show=True):
+    """The free-SQL agent. Returns every SQL the model sent, and its answer."""
+    calls, answer = loop(question, FREE_SQL, {"run_sql": run_sql}, show)
+    return [args["sql"] for _, args in calls], answer
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Correct SQL, wrong meaning
+
+The prompt names the columns. It does not say that a row of `fact_sales` is an order line, or what
+the business calls a sale. The model fills that in, run by run.
+
+<Scene widget="ag6-grain">
+<Step>
+</Step>
+<Step>
+
+Three runs of your own. Compare the SQL and the number.
+
+```python
+for run in range(3):
+    sent, answer = ask("How many sales did we make in 2025?", show=False)
+    print(f"run {run + 1}:", " ".join(sent[-1].split()) if sent else "(no SQL)")
+    print("   ", answer, "\n")
+```
+
+</Step>
+<Step>
+
+Every reading of the question, from the warehouse itself:
+
+```sql
+SELECT count(*)                 FILTER (WHERE status <> 'pending') AS order_lines,
+       count(DISTINCT order_id) FILTER (WHERE status <> 'pending') AS orders,
+       sum(quantity)            FILTER (WHERE status <> 'pending') AS units,
+       count(DISTINCT order_id)                                    AS every_order
+FROM mart.fact_sales JOIN mart.dim_date USING (date_key)
+WHERE year = 2025;
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Injection: any text the model reads can become SQL
+
+<Scene widget="ag6-inject">
+<Step>
+
+```sql
+SELECT product_key, name, category FROM mart.dim_product WHERE product_key = 1795;
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The cell prints every SQL the agent sent. Watch for a second one.
+
+```python
+sent, answer = ask("What are the three best-selling products in the Tools category by units, with their names?")
+print("\nqueries sent:", len(sent), "| touched dim_customer:", any("dim_customer" in s for s in sent))
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## Blast radius: one reader of everything
+
+<Scene widget="ag6-blast">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## What is done instead: names from a closed list
+
+The model stops writing SQL. It chooses metric and dimension names from a list that people defined,
+and code turns that choice into the statement. This is a **semantic layer**.
+
+Here it is on `shop`: a file of names, a compiler, three tools. Each step adds one piece and runs it.
+
+<Scene widget="age-layer">
+<Step>
+
+```python
+import yaml
+
+SEMANTIC = yaml.safe_load("""
+fact: fact_sales f
+joins:
+  product:  JOIN dim_product p  ON p.product_key  = f.product_key
+  customer: JOIN dim_customer c ON c.customer_key = f.customer_key
+  date:     JOIN dim_date d     ON d.date_key     = f.date_key
+metrics:
+  revenue:
+    description: Sales in US dollars. Pending orders are not sales yet and are left out.
+    sql: SUM(CASE WHEN f.status <> 'pending' THEN f.quantity * f.unit_cents END) / 100.0
+  order_count:
+    description: Number of orders (an order has several lines; each order is counted once).
+    sql: COUNT(DISTINCT f.order_id)
+  units_sold:
+    description: Units on orders that are not pending.
+    sql: SUM(CASE WHEN f.status <> 'pending' THEN f.quantity END)
+dimensions:
+  product:  {description: Product name, sql: p.name, join: product}
+  category: {description: Product category, sql: p.category, join: product}
+  region:   {description: Customer region, sql: c.region, join: customer}
+  country:  {description: Customer country, sql: c.country, join: customer}
+  month:    {description: "Month of the order, as its first day (2025-03-01)", sql: d.month_start, join: date}
+  year:     {description: Year of the order, sql: d.year, join: date}
+  status:   {description: "Order status: delivered, shipped or pending", sql: f.status}
+""")
+METRICS, DIMENSIONS = SEMANTIC["metrics"], SEMANTIC["dimensions"]
+print("metrics:", list(METRICS), "\ndimensions:", list(DIMENSIONS))
+```
+
+</Step>
+<Step>
+
+```python
+def compile_query(metrics, dimensions=(), filters=None, limit=50):
+    """The one SQL statement for these metrics by these dimensions, and the values it binds.
+    Names are looked up in the model; values travel as parameters, never inside the SQL text."""
+    filters = filters or {}
+    unknown = [n for n in metrics if n not in METRICS] + [n for n in [*dimensions, *filters] if n not in DIMENSIONS]
+    if unknown or not metrics:
+        raise ValueError(f"not in the model: {unknown}" if unknown else "ask for at least one metric")
+    used = {DIMENSIONS[d].get("join") for d in [*dimensions, *filters]}
+    select = [f"{DIMENSIONS[d]['sql']} AS {d}" for d in dimensions] + [f"{METRICS[m]['sql']} AS {m}" for m in metrics]
+    where = [f"CAST({DIMENSIONS[d]['sql']} AS text) = ANY(%(p{i})s)" for i, d in enumerate(filters)]
+    groups = ", ".join(str(i + 1) for i in range(len(dimensions)))
+    sql = "\n".join(
+        [f"SELECT {', '.join(select)}", f"FROM {SEMANTIC['fact']}"]
+        + [clause for join, clause in SEMANTIC["joins"].items() if join in used]
+        + ([f"WHERE {' AND '.join(where)}"] if where else [])
+        + ([f"GROUP BY {groups}", f"ORDER BY {len(dimensions) + 1} DESC"] if dimensions else [])
+        + [f"LIMIT {int(limit)}"])
+    return sql, {f"p{i}": [str(v) for v in values] for i, values in enumerate(filters.values())}
+
+
+sql, params = compile_query(["units_sold"], ["product"], {"category": ["Tools"]}, limit=3)
+print(sql, "\n", params)
+```
+
+</Step>
+<Step>
+
+```python
+for request in [dict(metrics=["revenue"], dimensions=["email"]),
+                dict(metrics=["revenue; DROP TABLE fact_sales"]),
+                dict(metrics=["revenue"], filters={"category": ["Tools' OR 1=1 --"]})]:
+    try:
+        sql, params = compile_query(**request)
+        with psycopg.connect(SHOP_URL) as conn:
+            print(request, "\n  -> compiled; rows:", conn.execute(sql, params).fetchall())
+    except ValueError as e:
+        print(request, "\n  -> refused:", e)
+```
+
+</Step>
+<Step>
+
+```python
+def list_metrics():
+    return {"metrics": {n: m["description"] for n, m in METRICS.items()},
+            "dimensions": {n: d["description"] for n, d in DIMENSIONS.items()}}
+
+
+def dimension_values(dimension):
+    if dimension not in DIMENSIONS:
+        return {"error": f"not in the model: {dimension}"}
+    item = DIMENSIONS[dimension]
+    join = SEMANTIC["joins"].get(item.get("join"), "")
+    with psycopg.connect(SHOP_URL) as conn:
+        rows = conn.execute(f"SELECT DISTINCT {item['sql']} FROM {SEMANTIC['fact']} {join} ORDER BY 1 LIMIT 60").fetchall()
+    return {"values": [str(r[0]) for r in rows]}
+
+
+def query_metrics(metrics, dimensions=(), filters=(), limit=50):
+    try:
+        sql, params = compile_query(metrics, dimensions, {f["dimension"]: f["values"] for f in filters}, limit)
+    except ValueError as e:
+        return {"error": str(e), "hint": "use names from list_metrics"}
+    with psycopg.connect(SHOP_URL) as conn:
+        cur = conn.execute(sql, params)
+        return {"columns": [c.name for c in cur.description], "rows": [[str(v) for v in r] for r in cur.fetchall()]}
+
+
+names = lambda items: {"type": "array", "items": {"type": "string", "enum": list(items)}}
+LAYER_TOOLS = [
+    types.FunctionDeclaration(name="list_metrics", description="List every metric and dimension, with what each means.",
+        parameters_json_schema={"type": "object", "properties": {}}),
+    types.FunctionDeclaration(name="dimension_values", description="The values a dimension takes, to use in a filter exactly as written.",
+        parameters_json_schema={"type": "object", "properties": {"dimension": {"type": "string", "enum": list(DIMENSIONS)}},
+                                "required": ["dimension"]}),
+    types.FunctionDeclaration(name="query_metrics",
+        description="Compute metrics, optionally split by dimensions and filtered. The only way to get numbers.",
+        parameters_json_schema={"type": "object", "required": ["metrics"], "properties": {
+            "metrics": names(METRICS), "dimensions": names(DIMENSIONS), "limit": {"type": "integer"},
+            "filters": {"type": "array", "items": {"type": "object", "required": ["dimension", "values"], "properties": {
+                "dimension": {"type": "string", "enum": list(DIMENSIONS)}, "values": {"type": "array", "items": {"type": "string"}}}}}}}),
+]
+LAYER = config("You answer questions about the shop's sales. Numbers come only from query_metrics. "
+               "Call list_metrics first if you do not know the names. Before filtering, look the value up with "
+               "dimension_values. If the model cannot answer a question, say which part is not in the model; never estimate.",
+               LAYER_TOOLS)
+LAYER_FUNCTIONS = {"list_metrics": list_metrics, "dimension_values": dimension_values, "query_metrics": query_metrics}
+print(list_metrics())
+```
+
+</Step>
+<Step>
+
+```python
+calls, answer = loop("What are the three best-selling products in the Tools category by units, with their names?",
+                     LAYER, LAYER_FUNCTIONS)
+print("calls:", [name for name, _ in calls])
+```
+
+</Step>
+<Step>
+
+```python
+calls, answer = loop("What was our profit margin in 2025?", LAYER, LAYER_FUNCTIONS)
+```
+
+</Step>
+</Scene>
+
+The same three words name the same ideas in the tools that do this for real:
+
+<table>
+<thead><tr><th>Our file</th><th>dbt MetricFlow</th><th>Cube</th><th>Apache Ossie (draft standard)</th></tr></thead>
+<tbody>
+<tr><td><code>metrics</code></td><td><code>metrics</code></td><td><code>measures</code></td><td><code>metrics</code></td></tr>
+<tr><td><code>dimensions</code></td><td><code>dimension</code>, set on a column</td><td><code>dimensions</code></td><td><code>fields</code> of a dataset, marked as a <code>dimension</code></td></tr>
+<tr><td><code>joins</code></td><td><code>entity</code>, set on a key column</td><td><code>joins</code></td><td><code>relationships</code></td></tr>
+</tbody>
+</table>
+
+Apache Ossie was called Open Semantic Interchange until it entered the Apache Incubator in mid-2026;
+its spec is still a pre-1.0 draft. A layer that fits in one short file lacks what those tools spend
+their code on: fan-out when a join multiplies rows, joins across more than one hop, cumulative
+metrics, caching, and access control per user.
+
+The closed list cuts both ways: a question outside it gets a refusal. So someone must own the model:
+decide what an order is, add the metric when the business asks for it, and keep the definitions true
+as the warehouse changes. That is BI work.

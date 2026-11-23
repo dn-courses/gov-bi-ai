@@ -1,0 +1,178 @@
+export const meta = { title: "Disk, Memory, CPU", minutes: 20, database: "shop", settings: {} };
+
+A dashboard, a database and a spreadsheet all stand on the same few parts of a computer. Each part
+does one job, and each has a price in time.
+
+<Scene widget="hw-machine">
+<Step>
+</Step>
+<Step>
+
+The disk of the machine your cells run on:
+
+```bash
+df -h .
+```
+
+</Step>
+<Step>
+
+```bash
+grep MemTotal /proc/meminfo
+```
+
+</Step>
+<Step>
+
+```bash
+nproc
+```
+
+</Step>
+<Step>
+
+The address your cell comes from, and the address of the database it reaches:
+
+```sql
+SELECT inet_client_addr() AS this_machine,
+       inet_server_addr() AS the_database;
+```
+
+</Step>
+<Step>
+
+The table this part works on: one row per bike-share station every five minutes, 1,000 stations, 90
+days. Building it takes about a minute.
+
+```sql id=build-table
+DROP TABLE IF EXISTS station_status;
+CREATE UNLOGGED TABLE station_status AS
+SELECT s AS station_id,
+       (ARRAY['NYC','JC','BOS','CHI','DC','SF'])[1 + s % 6] AS system_id,
+       t AS captured_at,
+       (10 + 8*sin(s + extract(epoch from t)/14400) + (hashint4(s + extract(epoch from t)::int) % 3))::smallint AS bikes_available,
+       (12 - 8*sin(s + extract(epoch from t)/14400))::smallint AS docks_available,
+       (hashint4(s*31 + extract(epoch from t)::int) & 3)::smallint AS ebikes_available,
+       (hashint4(s*7 + extract(epoch from t)::int) & 1)::smallint AS bikes_disabled,
+       (hashint4(s*13 + extract(epoch from t)::int) & 1)::smallint AS docks_disabled,
+       true AS is_renting, (s % 50 <> 0) AS is_returning, true AS is_installed,
+       t - interval '20 seconds' AS last_reported,
+       'Station ' || s || ' — ' || (ARRAY['Broadway & W 58 St','Grove St PATH','Harvard Square at Mass Ave','Clark St & Elm St','Columbus Circle / Union Station','Market St at 10th St'])[1 + s % 6] AS name,
+       '{"vehicle_types_available":[{"vehicle_type_id":"1","count":' || (10 + (s % 7)) || '},{"vehicle_type_id":"2","count":' || (s % 4) || '}]}' AS vehicle_types,
+       md5(s::text) AS legacy_id
+FROM generate_series(timestamptz '2026-07-01', timestamptz '2026-09-28 23:55', interval '5 min') t,
+     generate_series(1, 1000) s;
+```
+
+The same table written as a file, which later pages read. This also takes about a minute.
+
+```duckdb id=write-parquet needs=build-table
+INSTALL postgres; LOAD postgres;
+DETACH DATABASE IF EXISTS pg;
+ATTACH 'host=postgres user=postgres password=postgres dbname=shop' AS pg (TYPE postgres, READ_ONLY);
+COPY (SELECT * FROM pg.station_status ORDER BY station_id, captured_at)
+  TO 'station_status.parquet' (FORMAT parquet);
+SELECT count(*) AS rows FROM 'station_status.parquet';
+```
+
+```sql needs=build-table
+SELECT pg_size_pretty(pg_relation_size('station_status')) AS table_on_disk,
+       current_setting('shared_buffers')                  AS memory_for_table_data;
+```
+
+</Step>
+</Scene>
+
+Data does not travel between disk and memory one value at a time.
+
+<Scene widget="hw-pages">
+<Step>
+
+```sql needs=build-table
+SELECT current_setting('block_size')              AS page_bytes,
+       pg_relation_size('station_status') / 8192  AS pages;
+```
+
+Every row has an address, `ctid`: its page, then its place on the page. The rows of page 600000:
+
+```sql needs=build-table
+SELECT ctid, station_id, system_id, captured_at, bikes_available
+FROM station_status
+WHERE ctid >= '(600000,0)' AND ctid < '(600001,0)';
+```
+
+</Step>
+<Step>
+
+One row, fetched by its address. `Buffers` counts pages: `read` were brought in from outside
+PostgreSQL's memory, `hit` were already in it.
+
+```sql needs=build-table
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM station_status WHERE ctid = '(600000,1)';
+```
+
+</Step>
+<Step>
+
+```sql needs=build-table
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM station_status
+WHERE ctid >= '(600000,0)' AND ctid < '(600100,0)';
+```
+
+</Step>
+<Step>
+
+The same query, again:
+
+```sql needs=build-table
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM station_status
+WHERE ctid >= '(600000,0)' AND ctid < '(600100,0)';
+```
+
+</Step>
+<Step>
+
+An average over the table's first 10,000 pages. `Buffers` is the bytes moved, in pages; `rows` is
+the work the CPU did on them.
+
+```sql needs=build-table
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT avg(bikes_available) FROM station_status
+WHERE ctid < '(10000,0)';
+```
+
+</Step>
+</Scene>
+
+Once the data is in memory, the CPU does the work. There is more than one way for it to do so.
+
+<Scene widget="hw-flynn">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+
+The SIMD instruction sets this CPU announces (`asimd` on ARM; `sse2`, `avx2`, `avx512f` on Intel
+and AMD):
+
+```bash
+grep -owE 'asimd|sve|sse2|avx2|avx512f' /proc/cpuinfo | sort -u
+```
+
+</Step>
+<Step>
+
+DuckDB starts one thread for every core it is given:
+
+```duckdb
+SELECT current_setting('threads') AS threads;
+```
+
+</Step>
+<Step>
+</Step>
+</Scene>

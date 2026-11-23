@@ -1,0 +1,255 @@
+export const meta = { title: "Many Machines: MPP", minutes: 30, database: "shop", settings: {} };
+
+One machine has so many cores and one disk to feed them. Past that, a scan goes faster only on more
+machines, each scanning its own share at the same moment: **massively parallel processing** (MPP).
+
+<Scene widget="mp-split">
+<Step>
+</Step>
+<Step>
+
+Four workers in plain Python, over polls from four bike-share systems of different sizes, stored in
+the order they arrived. Each worker gets a quarter of them.
+
+```python
+import time
+from statistics import median
+from zlib import crc32
+
+WORKERS = 4
+# per system: (stations, the cycle its stations empty and refill on, in minutes)
+SYSTEMS = {"NYC": (600, 23), "CHI": (250, 17), "BOS": (100, 29), "PDX": (50, 13)}
+rows = [
+    (system, f"{system}-{s}", minute, cycle - 1 - (s * 7 + minute) % cycle)
+    for minute in range(1200)
+    for system, (stations, cycle) in SYSTEMS.items()
+    for s in range(stations)
+]
+size = len(rows) // WORKERS
+shares = [rows[w * size:(w + 1) * size] for w in range(WORKERS)]
+
+print(f"{len(rows):,} rows of (system, station, minute, bikes)")
+for w, share in enumerate(shares):
+    print(f"worker {w}: {len(share):,} rows, minutes {share[0][2]} to {share[-1][2]}")
+```
+
+</Step>
+<Step>
+
+```python
+def partial(share):
+    """One worker, its own rows only: a running sum and count per system."""
+    state = {}
+    for system, _, _, bikes in share:
+        total, count = state.get(system, (0, 0))
+        state[system] = (total + bikes, count + 1)
+    return state
+
+partials = [partial(share) for share in shares]
+for w, state in enumerate(partials):
+    print(f"worker {w}:", "   ".join(f"{s} {t:,}/{c:,}" for s, (t, c) in state.items()))
+```
+
+</Step>
+<Step>
+
+```python
+def owner(key, workers=WORKERS):
+    """The worker a key belongs to: its hash, modulo the number of workers."""
+    return crc32(key.encode()) % workers
+
+inboxes = [[] for _ in range(WORKERS)]
+for state in partials:
+    for system, (total, count) in state.items():
+        inboxes[owner(system)].append((system, total, count))
+
+for w, inbox in enumerate(inboxes):
+    print(f"worker {w} owns {inbox[0][0]}: received {len(inbox)} partial rows")
+print("rows sent between workers:", sum(len(inbox) for inbox in inboxes))
+```
+
+</Step>
+<Step>
+
+```python
+def final(inbox):
+    """The owner adds up the partial rows of its key, and only then divides."""
+    total = sum(t for _, t, _ in inbox)
+    count = sum(c for _, _, c in inbox)
+    return inbox[0][0], round(total / count, 3)
+
+answer = dict(final(inbox) for inbox in inboxes)  # one worker gathers the four answers
+print(answer)
+```
+
+</Step>
+</Scene>
+
+Some questions cannot be answered from a sum and a count.
+
+<Scene widget="mp-shuffle">
+<Step>
+
+```python
+def ran_empty(rows):
+    """Per station: polls that found it empty when the poll before did not."""
+    before, episodes = {}, {}
+    for _, station, _, bikes in sorted(rows, key=lambda row: (row[1], row[2])):
+        if bikes == 0 and before.get(station, 0) > 0:
+            episodes[station] = episodes.get(station, 0) + 1
+        before[station] = bikes
+    return episodes
+
+each_alone = sum(sum(ran_empty(share).values()) for share in shares)
+print(f"each worker counts its own share, then they add up: {each_alone:,}")
+print(f"the right answer, from every row in one place:      {sum(ran_empty(rows).values()):,}")
+```
+
+</Step>
+<Step>
+
+```python
+def shuffle(shares, key, workers=WORKERS):
+    """Every worker sends each of its rows to the worker that owns the row's key."""
+    inboxes, moved = [[] for _ in range(workers)], 0
+    for w, share in enumerate(shares):
+        for row in share:
+            to = owner(key(row), workers)
+            inboxes[to].append(row)
+            moved += to != w
+    return inboxes, moved
+
+by_station, moved = shuffle(shares, lambda row: row[1])
+for w, inbox in enumerate(by_station):
+    print(f"worker {w}: received {len(inbox):,} rows, {len({r[1] for r in inbox})} stations")
+print(f"rows sent: {sum(map(len, by_station)):,}, of them {moved:,} to another worker")
+episodes = {}
+for inbox in by_station:
+    episodes.update(ran_empty(inbox))
+print(f"times a station ran empty: {sum(episodes.values()):,}")
+```
+
+</Step>
+</Scene>
+
+<Scene widget="mp-skew">
+<Step>
+
+```python
+by_system, _ = shuffle(shares, lambda row: row[0])
+times = []
+for w, inbox in enumerate(by_system):
+    started = time.perf_counter()
+    median(bikes for *_, bikes in inbox)  # sorts every value
+    times.append(1000 * (time.perf_counter() - started))
+    print(f"worker {w}: {inbox[0][0]} {len(inbox):>7,} rows, {times[-1]:.0f} ms")
+print(f"the average worker: {sum(times) / WORKERS:.0f} ms.  The slowest: {max(times):.0f} ms")
+```
+
+</Step>
+<Step>
+
+```python
+by_system_8, _ = shuffle(shares, lambda row: row[0], workers=8)
+print("rows per worker, 8 workers:", [f"{len(inbox):,}" for inbox in by_system_8])
+```
+
+</Step>
+</Scene>
+
+BigQuery is an MPP engine run as a service. The table is the real capture: fourteen systems polled
+every minute, 1.8 billion rows, 167 GB.
+
+<Scene widget="mp-bigquery">
+<Step>
+
+```bigquery
+-- dry run
+SELECT TIMESTAMP_TRUNC(captured_at, MONTH) AS month, system_id,
+       AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+GROUP BY 1, 2;
+```
+
+</Step>
+<Step>
+
+The same plan on one week of the partitioned table, small enough for everyone to run. Under the
+result, find `parallel inputs` and `rows written` on the first stage.
+
+```bigquery
+SELECT DATE(captured_at) AS day, system_id, AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-08'
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+The whole table, 46 GB. The instructor runs this one.
+
+```bigquery manual
+SELECT TIMESTAMP_TRUNC(captured_at, MONTH) AS month, system_id,
+       AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+</Step>
+<Step>
+
+Read `S01` and `S02` in the output of the week, and the slot time on the line above the stages.
+
+</Step>
+<Step>
+
+Grouped by minute instead of by month. The instructor runs this one.
+
+```bigquery manual
+SELECT COUNT(*) AS number_of_groups, MAX(avg_bikes) AS highest_average
+FROM (
+  SELECT TIMESTAMP_TRUNC(captured_at, MINUTE) AS minute, system_id,
+         AVG(num_bikes_available) AS avg_bikes
+  FROM `enjoytech-bq-lab.gbfs.station_status`
+  GROUP BY 1, 2
+);
+```
+
+</Step>
+<Step>
+
+```bigquery
+SELECT system_id, COUNT(*) AS polls
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-08'
+GROUP BY 1
+ORDER BY polls DESC;
+```
+
+The exact median per system, over the whole table. It takes the better part of a minute; the
+instructor runs this one. Compare `worker avg` with `worker max` in the stages.
+
+```bigquery manual
+SELECT DISTINCT system_id,
+       PERCENTILE_CONT(num_bikes_available, 0.5) OVER (PARTITION BY system_id) AS median_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+ORDER BY system_id;
+```
+
+</Step>
+</Scene>
+
+The plan is older than its name. Parallel databases of the 1980s (Teradata, Gamma) already reduced
+each share, repartitioned by the key and finished on the owner; MapReduce (2004) made it popular and
+gave the exchange its name, the shuffle. What changed since is mostly how much it costs.
+
+<Scene widget="mp-now">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>

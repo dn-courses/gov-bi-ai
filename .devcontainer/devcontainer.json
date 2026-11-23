@@ -1,0 +1,34 @@
+{
+  "name": "gov-bi-ai (course)",
+  "dockerComposeFile": "../labs/base/compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [
+    3000,
+    8888
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "ExecutableBookProject.myst-highlight",
+        "redhat.vscode-yaml",
+        "mechatroner.rainbow-csv",
+        "ms-azuretools.vscode-docker",
+        "ms-ossdata.vscode-pgsql",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "files.watcherExclude": {
+          "**/hands-on/**": true,
+          "**/_build/**": true
+        }
+      }
+    }
+  }
+}
