@@ -18,7 +18,8 @@ Labs: agents, postgres. One runs at a time; starting another replaces it.
 
 3. Open <http://localhost:3000>.
 
-The first start downloads the app (about 400 MB); later ones take seconds. To get new or
+The first start downloads the app and the lab (a few GB: do it before the course, on a good
+connection); later ones take seconds. To get new or
 corrected pages: `git pull`, then the same command again. To stop: `docker compose -p gov-bi-ai down`.
 
 The rest of this page is the course's other way in: the lessons as a MyST site, with Jupyter.
