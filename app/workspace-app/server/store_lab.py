@@ -1,11 +1,12 @@
 """BigQuery as one participant sees it, for "Hands-on: Choose the Store".
 
-`bq(sql)` is in every Python cell's namespace (python_runner.py puts it there): it runs one statement
-in the participant's own dataset and prints what it took. A table named without a dataset is the
-participant's own (`w4` is `enjoytech-bq-lab.sandbox_p07.w4`); the shared tables may be named bare
-(`lab_station_status`, `station_status_partitioned`). The dataset comes from the key's `client_email`:
-student-p07 owns sandbox_p07. Every statement is refused, free of charge, above 5 GB billed.
-`measure_runner.py` (the page's Measure buttons) runs its queries through the same `run_job`.
+`rewrite` is applied to every `bigquery` cell (bigquery_runner.py), and changes only two patterns: a
+CREATE [OR REPLACE] TABLE or DROP TABLE whose table is named bare (`w4`, or `{sandbox}.w4`) gets the
+participant's own dataset (`enjoytech-bq-lab.sandbox_p07.w4`), and the shared tables named bare
+(`lab_station_status`, `station_status_partitioned`) get their full names. A name that already has a
+dataset is left alone. The dataset comes from the key's `client_email`: student-p07 owns sandbox_p07.
+`measure_runner.py` (the page's Measure buttons) runs its queries through `run_job`, and the page's
+clean-up cell calls `clean_up`.
 """
 
 import functools
@@ -15,17 +16,23 @@ import re
 from pathlib import Path
 from typing import Any
 
+from bq_guard import check_price, dollars, max_bytes, quote
+
 PROJECT = "enjoytech-bq-lab"
 SHARED = re.compile(r"(?<![\w.-])`?(lab_station_status|station_status_partitioned)`?(?![\w.])")
+# The table a CREATE TABLE or DROP TABLE names, when it names no dataset: `w4`, or `{sandbox}.w4`.
+TARGET = re.compile(
+    r"\b((?:CREATE(?:\s+OR\s+REPLACE)?|DROP)\s+TABLE(?:\s+IF(?:\s+NOT)?\s+EXISTS)?\s+)"
+    r"`?(?:\{sandbox\}\.)?(?!IF\b)(\w+)`?(?![\w.`-])",
+    re.IGNORECASE,
+)
 OWN_TABLE = re.compile(r"w[1-8]")
-MAX_BYTES_BILLED = 5 * 10**9
-PRICE_PER_TIB = 6.25  # on demand, US
 MB = 2**20  # the unit PostgreSQL prints and BigQuery's 10 MB minimum is counted in
 NOT_CONNECTED = (
     "BigQuery is not connected in this lab. Put the key file you were given at "
     "secrets/bigquery-key.json in the course folder, then start the app again."
 )
-OVER_THE_CAP = "Refused, free of charge: this would bill more than the 5 GB limit. Read fewer columns or rows"
+OVER_THE_CAP = "Refused, free of charge: this would bill more than the limit a query may cost."
 OUT_OF_QUOTA = "Nothing ran: this key has used up its BigQuery quota for today."
 
 
@@ -40,15 +47,33 @@ def qualify(sql: str) -> str:
 
 
 @functools.cache
-def lab() -> tuple[Any, str]:
-    """The BigQuery client and the participant's dataset, made on first use from the lab's key."""
+def key_info() -> dict[str, Any]:
+    """The lab's key file, read on first use."""
     key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
     if not key or not Path(key).is_file():
         raise RuntimeError(NOT_CONNECTED)
+    return json.loads(Path(key).read_text())
+
+
+def own_dataset() -> str:
+    return sandbox_of(key_info()["client_email"])
+
+
+def rewrite(sql: str) -> str:
+    """A `bigquery` cell as BigQuery gets it: bare shared tables and a bare table to create or drop
+    named in full. Anything else, and any name that already has a dataset, is returned as written."""
+    sql = qualify(sql)
+    if not TARGET.search(sql):
+        return sql
+    return TARGET.sub(lambda found: f"{found.group(1)}`{PROJECT}.{own_dataset()}.{found.group(2)}`", sql)
+
+
+@functools.cache
+def lab() -> tuple[Any, str]:
+    """The BigQuery client and the participant's dataset, made on first use from the lab's key."""
     from google.cloud import bigquery  # imported late: the app starts without credentials
 
-    info = json.loads(Path(key).read_text())
-    return bigquery.Client.from_service_account_info(info), sandbox_of(info["client_email"])
+    return bigquery.Client.from_service_account_info(key_info()), own_dataset()
 
 
 def readable(message: str) -> str:
@@ -62,17 +87,26 @@ def readable(message: str) -> str:
     return message
 
 
-def run_job(sql: str) -> Any:
-    """Run one statement for real: cache off, the 5 GB cap, bare table names in the own dataset."""
-    from google.api_core.exceptions import GoogleAPICallError
+def job_config(dry_run: bool) -> Any:
+    """Cache off, the price limit, and bare table names in the participant's own dataset."""
     from google.cloud import bigquery
 
-    client, sandbox = lab()
-    config = bigquery.QueryJobConfig(
-        use_query_cache=False, maximum_bytes_billed=MAX_BYTES_BILLED, default_dataset=f"{PROJECT}.{sandbox}"
-    )
+    own = f"{PROJECT}.{own_dataset()}"
+    config = bigquery.QueryJobConfig(dry_run=dry_run, use_query_cache=False, default_dataset=own)
+    if not dry_run:
+        config.maximum_bytes_billed = max_bytes()
+    return config
+
+
+def run_job(sql: str) -> Any:
+    """Run one statement for real, once it is known to cost no more than the limit."""
+    from google.api_core.exceptions import GoogleAPICallError
+
+    client, _ = lab()
+    sql = qualify(sql)
+    check_price(quote(client, sql, job_config))
     try:
-        job = client.query(qualify(sql), job_config=config)
+        job = client.query(sql, job_config=job_config(False))
         job.result()
     except GoogleAPICallError as refused:  # the reason in a line, without the library's traceback
         raise RuntimeError(readable(refused.message or str(refused))) from None
@@ -94,20 +128,16 @@ def time_text(seconds: float) -> str:
     return f"{ms:,.1f} ms" if ms >= 1 else f"{ms:.3f} ms"
 
 
-def dollars(bytes_billed: int) -> float:
-    return bytes_billed / 2**40 * PRICE_PER_TIB
-
-
-def bq(sql: str) -> None:
-    """Run one statement on BigQuery, in your own dataset, and print what it took."""
-    job = run_job(sql)
-    billed = job.total_bytes_billed or 0
+def made_text(job: Any) -> str:
+    """What a CREATE TABLE or DROP TABLE in the own dataset did, and what it took."""
     target = job.ddl_target_table
     what = (job.statement_type or "statement").replace("_", " ")
-    print(f"{what}: {target.dataset_id}.{target.table_id}" if target else f"{what}: done")
-    print(f"  time    {time_text((job.ended - job.started).total_seconds())}")
-    print(f"  billed  {size_text(billed)}")
-    print(f"  cost    ${dollars(billed):.4f}")
+    billed = job.total_bytes_billed or 0
+    took = time_text((job.ended - job.started).total_seconds())
+    return (
+        f"{what}: {target.dataset_id}.{target.table_id}\n"
+        f"Elapsed {took}. Billed {size_text(billed)}. Cost ${dollars(billed):.4f}."
+    )
 
 
 def drop_indexes(keep_mine: bool) -> list[str]:

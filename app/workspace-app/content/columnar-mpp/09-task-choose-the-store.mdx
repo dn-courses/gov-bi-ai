@@ -2,8 +2,7 @@ export const meta = { title: "Hands-on: Choose the Store", minutes: 60, database
 
 The same readings live in two stores. Eight workloads ask for them, each with its own query and its
 own number of runs a month. For each one you choose where the data lives and how it is laid out,
-build it, measure it, and write down three numbers. One is solved for you. At the end you choose for
-all eight at once.
+build it, and measure it. One is solved for you. At the end you choose for all eight at once.
 
 ## The two stores
 
@@ -27,12 +26,18 @@ Every workload shows its query, then two cells and two buttons.
 
 - **The PostgreSQL cell** is plain SQL: the index you choose. Start its name with `ho_`.
 - **The BigQuery cell** builds your own copy of the table, laid out as you choose. Name the table
-  after the workload (`w4`) and the shared table simply `lab_station_status`: `bq(...)` puts the
-  table in your own dataset, runs the statement, and prints what building it took. A copy must
-  **name its columns**: `SELECT *` would bill the whole table, and anything above 5 GB is refused.
+  after the workload (`w4`) and the shared table simply `lab_station_status`: the table is created
+  in your own dataset, and the cell prints what building it took. A copy should **name its
+  columns**: `SELECT *` bills the whole table. Every statement is priced first, free of
+  charge: one that would cost more than $0.05 is not run, and the cell says what it would have read
+  and cost.
 - **The two buttons** run the workload's query, exactly as shown, and give three numbers. On
   BigQuery the query runs on your table for that workload when you have built it, and on the shared
-  table when you have not. Press them before you build anything, and again after.
+  table when you have not. Press them before you build anything, and again after. Asked again
+  while nothing has changed, a button answers from the cache.
+- **Your best so far** appears under each button: the three numbers of your best measurement on
+  that store, what you had built for it, and how many attempts you made. On BigQuery the best is
+  the cheapest, on PostgreSQL the fastest.
 
 The three numbers:
 
@@ -71,13 +76,11 @@ CREATE INDEX ho_w3 ON station_status (captured_at, system_id);
 
 On BigQuery, a copy partitioned by day:
 
-```python id=w3-bq standalone
-bq("""
+```bigquery id=w3-bq
 CREATE OR REPLACE TABLE w3
 PARTITION BY DATE(captured_at)
 AS SELECT station_id, system_id, captured_at, bikes_available, docks_available
 FROM lab_station_status
-""")
 ```
 
 <Measure workload="W3" />
@@ -100,8 +103,8 @@ and PostgreSQL on latency, and neither reads more than a few megabytes.
 
 ## The workloads
 
-For each workload: press both buttons, decide what to build on each store, build it, press again,
-and fill in its rows of the results table further down. About 35 minutes for W1, W2, W4 and W5,
+For each workload: press both buttons, decide what to build on each store, build it, and press
+again. About 35 minutes for W1, W2, W4 and W5,
 10 for W6 to W8, and 15 for the final question.
 
 An index or a table you built for one workload is still there for the next. To remove an index:
@@ -126,12 +129,10 @@ DROP INDEX IF EXISTS ho_w1;
 CREATE INDEX ho_w1 ON station_status (...);
 ```
 
-```python id=w1-bq manual standalone
-bq("""
+```bigquery id=w1-bq manual
 CREATE OR REPLACE TABLE w1
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM lab_station_status
-""")
 ```
 
 <Measure workload="W1" />
@@ -156,12 +157,10 @@ DROP INDEX IF EXISTS ho_w2;
 CREATE INDEX ho_w2 ON station_status (...);
 ```
 
-```python id=w2-bq manual standalone
-bq("""
+```bigquery id=w2-bq manual
 CREATE OR REPLACE TABLE w2
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM lab_station_status
-""")
 ```
 
 <Measure workload="W2" />
@@ -187,12 +186,10 @@ DROP INDEX IF EXISTS ho_w4;
 CREATE INDEX ho_w4 ON station_status (...);
 ```
 
-```python id=w4-bq manual standalone
-bq("""
+```bigquery id=w4-bq manual
 CREATE OR REPLACE TABLE w4
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM lab_station_status
-""")
 ```
 
 <Measure workload="W4" />
@@ -216,12 +213,10 @@ DROP INDEX IF EXISTS ho_w5;
 CREATE INDEX ho_w5 ON station_status (...);
 ```
 
-```python id=w5-bq manual standalone
-bq("""
+```bigquery id=w5-bq manual
 CREATE OR REPLACE TABLE w5
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM lab_station_status
-""")
 ```
 
 <Measure workload="W5" />
@@ -238,9 +233,14 @@ table of yours must keep the names `captured_at`, `system_id` and `bikes_availab
 ## At real volume: W6, W7, W8 on the capture
 
 These three run on the real capture, one week of it (2026-10-12 to 2026-10-18: 100,311,561 rows).
-The capture names the bike count `num_bikes_available`, and `bq(...)` knows the table as
-`station_status_partitioned`. PostgreSQL has nothing to build here: the capture does not fit a
-laptop, so its button shows arithmetic, not a run.
+The capture names the bike count `num_bikes_available`, and a BigQuery cell names the table
+`station_status_partitioned`. Here you build only on BigQuery.
+
+PostgreSQL cannot be measured at this volume: the capture does not fit a laptop. What it should
+take is arithmetic, not a run. As a row table the capture is about 413 GiB (69.6 lab tables of
+6,075 MB) and one week about 23 GiB; a 500 GiB cloud disk reads 240 MiB a second, so a week takes
+23,511 MiB ÷ 240 = about 98 s and the whole capture 422,742 MiB ÷ 240 = about 29 minutes, on a
+server that costs $287.36 a month.
 
 ### W6 · The week's KPI per system · 4,400 runs a month
 
@@ -251,16 +251,16 @@ WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
 GROUP BY system_id ORDER BY system_id
 ```
 
-```python id=w6-bq manual standalone
-bq("""
+On PostgreSQL, by the arithmetic above: about 98 s for the week, about 29 minutes for the whole capture.
+
+```bigquery id=w6-bq manual
 CREATE OR REPLACE TABLE w6
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM station_status_partitioned
 WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
-""")
 ```
 
-<Measure workload="W6" />
+<Measure workload="W6" store="bq" />
 
 ### W7 · Each system's emptiest hour of the day over the week · 500 runs a month
 
@@ -272,16 +272,16 @@ GROUP BY system_id, hour
 QUALIFY ROW_NUMBER() OVER (PARTITION BY system_id ORDER BY bikes) = 1 ORDER BY system_id
 ```
 
-```python id=w7-bq manual standalone
-bq("""
+On PostgreSQL, by the arithmetic above: about 98 s for the week, about 29 minutes for the whole capture.
+
+```bigquery id=w7-bq manual
 CREATE OR REPLACE TABLE w7
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM station_status_partitioned
 WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
-""")
 ```
 
-<Measure workload="W7" />
+<Measure workload="W7" store="bq" />
 
 ### W8 · Stations reporting, per system per day · 500 runs a month
 
@@ -292,58 +292,16 @@ WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
 GROUP BY day, system_id ORDER BY day, system_id
 ```
 
-```python id=w8-bq manual standalone
-bq("""
+On PostgreSQL, by the arithmetic above: about 98 s and a sort for the week, about 29 minutes and a sort for the whole capture.
+
+```bigquery id=w8-bq manual
 CREATE OR REPLACE TABLE w8
 PARTITION BY ... CLUSTER BY ...
 AS SELECT <columns> FROM station_status_partitioned
 WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
-""")
 ```
 
-<Measure workload="W8" />
-
-**The PostgreSQL arithmetic**, and what every line is computed from:
-
-<table>
-  <thead><tr><th>step</th><th>arithmetic</th><th>result</th></tr></thead>
-  <tbody>
-    <tr><td>the table</td><td>1,803,699,574 rows ÷ 25,920,000 = 69.6 times the lab table; 6,075 MB × 69.6</td><td>about 413 GiB</td></tr>
-    <tr><td>one week</td><td>100,311,561 rows = 3.87 lab tables</td><td>about 23 GiB</td></tr>
-    <tr><td>the server</td><td>413 GiB fits neither 20 GiB of disk nor 16 GiB of memory; with 500 GiB of disk: $202.36 for 4 vCPU and 16 GiB, + 500 × $0.17 (cloud.google.com/sql/pricing, read 2026-11-23)</td><td>$287.36 a month</td></tr>
-    <tr><td>the disk's speed</td><td>an SSD disk gives 0.48 MiB/s per GiB, at most 240 MiB/s for 2–7 vCPUs (cloud.google.com/compute/docs/disks/performance, read 2026-11-24): 500 × 0.48</td><td>240 MiB/s</td></tr>
-    <tr><td>time for one week</td><td>23,511 MiB ÷ 240 MiB/s, at best: an index on <code>captured_at</code> and the week's rows stored together</td><td>about 98 s; W8 adds a sort on top</td></tr>
-    <tr><td>time for the whole capture</td><td>422,742 MiB ÷ 240 MiB/s</td><td>about 29 minutes</td></tr>
-  </tbody>
-</table>
-
-The scan rate itself was measured on the lab table: these three query shapes read the full 6,075 MB
-in 1.0–1.3 s (W6), 1.4 s (W7) and 4.5 s (W8), with the table in memory. At this volume it is not.
-
-## Your results
-
-Copy this into your notes and fill it in as you go: one row per workload and store.
-
-```md
-| workload | runs a month | store | what you built | data read | latency | cost a month |
-|---|---|---|---|---|---|---|
-| W1 | 100,000 | PostgreSQL | | | | $205.76 (rent) |
-| W1 | 100,000 | BigQuery | | | | |
-| W2 | 100 | PostgreSQL | | | | $205.76 (rent) |
-| W2 | 100 | BigQuery | | | | |
-| W3 | 4,400 | PostgreSQL | ho_w3 (captured_at, system_id) | | | $205.76 (rent) |
-| W3 | 4,400 | BigQuery | w3, partitioned by day | | | |
-| W4 | 500 | PostgreSQL | | | | $205.76 (rent) |
-| W4 | 500 | BigQuery | | | | |
-| W5 | 4,400 | PostgreSQL | | | | $205.76 (rent) |
-| W5 | 4,400 | BigQuery | | | | |
-| W6 | 4,400 | PostgreSQL | (arithmetic) | about 23 GiB | about 98 s | $287.36 (rent) |
-| W6 | 4,400 | BigQuery | | | | |
-| W7 | 500 | PostgreSQL | (arithmetic) | about 23 GiB | about 98 s | $287.36 (rent) |
-| W7 | 500 | BigQuery | | | | |
-| W8 | 500 | PostgreSQL | (arithmetic) | about 23 GiB | 98 s and a sort | $287.36 (rent) |
-| W8 | 500 | BigQuery | | | | |
-```
+<Measure workload="W8" store="bq" />
 
 ## The question
 
@@ -381,7 +339,7 @@ Points for the room:
 - **No index helps W5**, and a covering index makes it slower: its page visits add up to more than
   the table (31 GB of visits through a 1 GB index). Only adding up in advance goes under 507 MB.
 - **Fewer columns in a copy change nothing for a query**: BigQuery reads only the columns asked for
-  anyway. They make the copy cheaper to build (903 MB billed instead of a refused 6.33 GB).
+  anyway. They make the copy cheaper to build (903 MB billed instead of 6.33 GB).
 - **An UPDATE on BigQuery takes seconds**, even when it bills 10 MB.
 - **At real volume the server cannot keep up**: 4,400 W6 weeks a month × 98 s is 120 hours of one
   disk, and the whole-capture form is 29 minutes a run. On BigQuery, the same 4,400 runs over the

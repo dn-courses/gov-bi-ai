@@ -92,10 +92,11 @@ app.post("/api/cell", async (c) => {
 });
 
 // A page's Measure button: one workload's fixed query on one store (measure_runner.py). Answers
-// with the three tiles and what was measured, or with `error` in words the button can show.
+// with the three tiles, what was measured and the participant's best so far (`look`: only that,
+// without measuring), or with `error` in words the button can show.
 app.post("/api/measure", async (c) => {
-  const { workload, store } = await c.req.json();
-  const { out, error, ms } = await timed(measure.run(JSON.stringify({ workload, store })));
+  const { workload, store, look = false } = await c.req.json();
+  const { out, error, ms } = await timed(measure.run(JSON.stringify({ workload, store, look })));
   return c.json(error ? { error, ms } : { ...JSON.parse(out), ms });
 });
 

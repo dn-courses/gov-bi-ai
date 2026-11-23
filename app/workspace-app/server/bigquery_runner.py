@@ -4,17 +4,27 @@ Reads one JSON object per line on stdin and answers with one JSON line:
 
     {"code": ...}  ->  {"out": <the result, then what the job did>, "error": ...}
 
-A cell whose first line is `-- dry run` is priced and not run. Every query is refused above
-`BIGQUERY_MAX_GB_PER_QUERY` (default 100), and the result cache is off, so a cell always reports the
-work of a real run. The client is made on first use from the key file named by
-`GOOGLE_APPLICATION_CREDENTIALS`; a lab without one answers with how to connect it.
+A cell whose first line is `-- dry run` is priced and not run, and is never refused. A real run is
+priced by a dry run first and not run when it would cost more than `BIGQUERY_MAX_DOLLARS_PER_QUERY`
+(default $0.05): the cell then shows the bytes and the price. BigQuery's result cache is off, so a
+cell reports the work of a real run; but a SELECT or a CREATE TABLE … AS SELECT asked again while
+its tables have not changed is answered from the app's own cache, with the first run's numbers
+(bq_guard.py). A table created or dropped under a bare name is the participant's own, and the
+shared lab tables may be named bare (`store_lab.rewrite`); such a statement answers with what it
+took. Every other cell is sent as written. The client is made on first use from the key file named
+by `GOOGLE_APPLICATION_CREDENTIALS`; a lab without one answers with how to connect it.
 """
 
+import functools
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from bq_guard import FROM_CACHE, Cache, cached, check_price, max_bytes, quote, tables_state
+from store_lab import made_text, rewrite
 
 SHOWN_ROWS = 40
 DRY_RUN_MARK = "-- dry run"
@@ -22,6 +32,9 @@ NOT_CONNECTED = (
     "BigQuery is not connected in this lab. Put the key file you were given at "
     "secrets/bigquery-key.json in the course folder, then start the app again."
 )
+
+
+CACHE: Cache = {}  # the rewritten statement -> (its tables' state, the cell's output)
 
 
 class NotConnected(Exception):
@@ -42,8 +55,7 @@ def job_config(dry_run: bool) -> Any:
 
     config = bigquery.QueryJobConfig(dry_run=dry_run, use_query_cache=False)
     if not dry_run:
-        max_gb = float(os.environ.get("BIGQUERY_MAX_GB_PER_QUERY", "100"))
-        config.maximum_bytes_billed = int(max_gb * 1e9)
+        config.maximum_bytes_billed = max_bytes()
     return config
 
 
@@ -118,13 +130,26 @@ def job_text(job: Any) -> str:
     return f"{summary}\n\n{stages_text(job)}"
 
 
-def run(client: Any, code: str) -> str:
-    dry_run = code.lstrip().lower().startswith(DRY_RUN_MARK)
-    job = client.query(code, job_config=job_config(dry_run))
-    if dry_run:
+def real_run(client: Any, sql: str, config: Callable[[bool], Any], own: bool) -> str:
+    """`own`: completed with the participant's names; it says what it made and what that took."""
+    job = client.query(sql, job_config=config(False))
+    if own:
+        job.result()
+        if job.ddl_target_table:
+            return made_text(job)
+    return f"{result_text(job)}\n\n{job_text(job)}"
+
+
+def run(client: Any, code: str, config: Callable[[bool], Any] = job_config, cache: Cache = CACHE) -> str:
+    sql = rewrite(code)
+    if code.lstrip().lower().startswith(DRY_RUN_MARK):
+        job = client.query(sql, job_config=config(True))
         return f"Not run. This query would read {size(job.total_bytes_processed)}."
-    shown = result_text(job)
-    return f"{shown}\n\n{job_text(job)}"
+    quoted = quote(client, sql, config)
+    check_price(quoted)
+    state_of = functools.partial(tables_state, client, quoted)
+    out, hit = cached(cache, sql, state_of, lambda: real_run(client, sql, config, own=sql != code))
+    return f"{out}\n\n{FROM_CACHE}" if hit else out
 
 
 def main() -> None:

@@ -68,4 +68,5 @@ runtime with `gemini-embedding-001` on Vertex AI.
 The pages quote their own prices where they measure cost (`20-conversation-history`,
 `22-prompt-caching`: USD per 1M tokens for `gemini-3.5-flash-lite` on Vertex AI, checked
 2026-11-23). The model calls and the BigQuery queries are billed to the project of the key file in
-the course's `secrets/` folder; BigQuery cells are refused above `BIGQUERY_MAX_GB_PER_QUERY`.
+the course's `secrets/` folder; a BigQuery cell that would cost more than
+`BIGQUERY_MAX_DOLLARS_PER_QUERY` ($0.05 unless set) is priced and not run.
