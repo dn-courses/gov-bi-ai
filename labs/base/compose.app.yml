@@ -31,6 +31,10 @@ services:
       # `bigquery` cells: a key file the student drops into the course's `secrets/` folder
       # (gitignored). Without one those cells say how to connect; everything else runs.
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/bigquery-key.json
+      # The price above which a BigQuery run is only priced, not run (server/bq_guard.py). An
+      # instructor raises them in the course's `.env` to run the full-capture cells live.
+      - BIGQUERY_MAX_DOLLARS_PER_QUERY=${BIGQUERY_MAX_DOLLARS_PER_QUERY:-0.05}
+      - BIGQUERY_MAX_DOLLARS_PER_CREATE=${BIGQUERY_MAX_DOLLARS_PER_CREATE:-0.10}
     volumes: !override
       - ../../secrets:/secrets:ro
       # The page sources, over the copies in the image: a pull brings new pages without a new
