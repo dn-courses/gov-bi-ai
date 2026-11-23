@@ -24,11 +24,11 @@ const steps = (D) => [
   { stop: "The move", title: "The customer moves: the row is overwritten",
     note: `Suppose the customer moves to Norway (an example: in the lab they live in Sweden). The application updates one value, and <code>SE</code> is gone. That is right for the application: the next parcel goes to Norway.` },
   { stop: "The copy", title: "The warehouse holds a copy, and the orders point at it",
-    note: `In <code>mart</code> the customer is a row of <code>dim_customer</code>, and each of their six order lines in <code>fact_sales</code> carries its key. Every order reports under Sweden.` },
+    note: `In <code>mart</code> the customer is a row of <code>dim_customer</code>. Each of their six order lines in <code>fact_sales</code> holds only the customer's key; the country is read from the dimension row the key points at. Every order reports under Sweden.` },
   { stop: "Type 1", title: "Type 1: overwrite the dimension row",
-    note: `The copy takes the new country, as the source did. One row per customer, always current. Every order now reports under Norway, including the three from 2024, when the customer lived in Sweden.` },
+    note: `The dimension row takes the new country, as the source did; the fact is not touched. One row per customer, always current. Every order now reads Norway through the same key, including the three from 2024, when the customer lived in Sweden.` },
   { stop: "Type 2", title: "Type 2: close the old row, add a new one", decisive: true,
-    note: `The old row stays, with the last day it was true. The new row gets dates of its own and a new key, <code>customer_sk</code>, which identifies a version, not a customer: <code>customer_id</code> stays the same on both. Orders before the move keep pointing at the Sweden version; only the order after it points at Norway.` },
+    note: `The old row stays, with the last day it was true. The new row gets dates of its own and a new key, <code>customer_sk</code>, which identifies a version, not a customer: <code>customer_id</code> stays the same on both. The fact rows written before the move keep the Sweden version's key; the order after it was loaded with the new key. The dimension carries the history; the fact only points.` },
   { stop: "2024 report", title: "The 2024 revenue-by-country report, under each",
     note: `Type 1 rewrote 2024: ${D.moved} — the customer's three 2024 orders — moved from Sweden to Norway, and a report printed before the move no longer matches. Type 2 still says what the 2024 report said.` },
   { stop: "Choose", title: "Each attribute gets one of the two, on purpose",
@@ -36,11 +36,10 @@ const steps = (D) => [
 ];
 
 const PAD = 14;
-const OCOLS = (key, joined) => ["order_id", "day", key, "revenue", ...(joined ? ["country"] : [])];
-
-// The customer's six orders; `key(i)` and `country(i)` give the cells this step shows.
-const orders = (D, keyName, key, country, cap) =>
-  grid(24, 176, OCOLS(keyName, !!country), D.orders.map(([o, d, r], i) => [o, d, key(i), r, ...(country ? [country(i)] : [])]), { cap, pad: PAD, rowH: 25 });
+// The fact holds the key and the measures, never the country: the country lives only in the dimension
+// row the key points at. `key(i)` gives each order's key cell for this step.
+const orders = (D, keyName, key, cap) =>
+  grid(24, 176, ["order_id", "day", keyName, "revenue"], D.orders.map(([o, d, r], i) => [o, d, key(i), r]), { cap, pad: PAD, rowH: 25 });
 
 const scene = (D) => svg(760, 420, `
   ${on("0", `${grid(24, 60, ["customer_id", "country", "signed_up"], [[`${D.id}`, "SE", "2021-11-19"]], { cap: "customers — the state now", pad: PAD })}
@@ -49,15 +48,16 @@ const scene = (D) => svg(760, 420, `
     ${t(24, 190, `UPDATE customers SET country = 'NO' WHERE customer_id = ${D.id};`, "code")}
     ${t(560, 90, "SE is gone", "h hot")}${t(560, 116, "and that is right, here", "lbl")}`)}
   ${on("2", `${grid(24, 60, ["customer_key", "country", "region"], [[`${D.id}`, "Sweden", "Europe"]], { cap: "dim_customer", pad: PAD })}
-    ${orders(D, "customer_key", () => `${D.id}`, () => "Sweden", "fact_sales — the customer's orders, joined")}`)}
+    ${orders(D, "customer_key", () => [`${D.id}`, "rep"], "fact_sales — the orders keep only the key")}
+    ${t(600, 260, "six orders, one key:", "h")}${t(600, 286, "the country is read", "lbl")}${t(600, 312, "from the dim row", "lbl")}`)}
   ${on("3", `${grid(24, 60, ["customer_key", "country", "region"], [[`${D.id}`, ["Norway", "chg"], "Europe"]], { cap: "dim_customer — Type 1: overwrite", pad: PAD })}
-    ${orders(D, "customer_key", () => `${D.id}`, () => ["Norway", "rep"], "fact_sales — joined to the Type 1 row")}
-    ${t(600, 260, "all six orders:", "h")}${t(600, 286, "Norway", "h hot")}${t(600, 312, "2024 included", "lbl")}`)}
+    ${orders(D, "customer_key", () => `${D.id}`, "fact_sales — untouched: the same key")}
+    ${t(600, 260, "same key, overwritten row:", "h")}${t(600, 286, "all six read Norway", "h hot")}${t(600, 312, "2024 included", "lbl")}`)}
   ${on("4", `${grid(24, 44, ["customer_sk", "customer_id", "country", "valid_from", "valid_to"],
       [[`${D.id}`, `${D.id}`, "Sweden", "2024-01-01", ["2025-05-31", "chg"]], [["100001", "chg"], [`${D.id}`, "chg"], ["Norway", "chg"], ["2025-06-01", "chg"], ["9999-12-31", "chg"]]],
       { cap: "dim_customer — Type 2: a new version", pad: PAD })}
-    ${orders(D, "customer_sk", (i) => (i === 5 ? ["100001", "chg"] : `${D.id}`), (i) => (i === 5 ? ["Norway", "chg"] : "Sweden"), "fact_sales — each order with its version")}
-    ${t(600, 260, "five orders: Sweden", "h")}${t(600, 286, "one, after the move:", "h")}${t(600, 312, "Norway", "h acc")}`)}
+    ${orders(D, "customer_sk", (i) => (i === 5 ? ["100001", "chg"] : `${D.id}`), "fact_sales — each order keeps the key of its version")}
+    ${t(600, 260, `five orders → ${D.id}`, "h")}${t(600, 286, "the Sweden row", "lbl")}${t(600, 312, "one → 100001: Norway", "h acc")}`)}
   ${on("5", `${grid(80, 70, ["country", "before the move", "Type 1", "Type 2"],
       D.report.map(([c, b, t1, t2]) => [c, b, [t1, "rep"], t2]), { cap: "revenue 2024 — by country", pad: 40, rowH: 34 })}
     ${t(380, 250, `${D.moved} moved`, "num hot")}${t(380, 282, "under Type 1, the customer's 2024 orders changed country", "lbl")}
