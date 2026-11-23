@@ -25,6 +25,7 @@ const forget = (lang: string) => () => {
 const python = pythonSession(WORK, "python_runner.py", forget("python"));
 const duck = pythonSession(WORK, "duckdb_runner.py", forget("duckdb"));
 const bigquery = pythonSession(WORK, "bigquery_runner.py");
+const measure = pythonSession(WORK, "measure_runner.py");
 
 const shell = (code: string) =>
   new Promise<{ out: string; error: string | null }>((resolve) =>
@@ -88,6 +89,14 @@ app.post("/api/cell", async (c) => {
   const answer = await timed(work);
   if (cell && (!answer.error || cell.expect === "error")) ran.add(cell.key);
   return c.json({ ...answer, first: caught.first });
+});
+
+// A page's Measure button: one workload's fixed query on one store (measure_runner.py). Answers
+// with the three tiles and what was measured, or with `error` in words the button can show.
+app.post("/api/measure", async (c) => {
+  const { workload, store } = await c.req.json();
+  const { out, error, ms } = await timed(measure.run(JSON.stringify({ workload, store })));
+  return c.json(error ? { error, ms } : { ...JSON.parse(out), ms });
 });
 
 // Every cell of every page, for a check that runs them all.

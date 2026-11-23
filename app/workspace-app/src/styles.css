@@ -126,7 +126,7 @@ article > h2 { display: flex; align-items: baseline; gap: 16px; margin: 72px 0 1
 article > p, .scene .step > p { margin: 14px 0; max-width: 44rem; font-size: 1.12rem; line-height: 1.6; color: var(--soft); }
 article > p strong, article > p b, .scene .step > p strong, .scene .step > p b { color: var(--ink); font-weight: 650; }
 article > p code, article > table code, .scene .step > p code, .scene .step > table code { font-family: var(--mono); font-size: 0.86em; padding: 0.12em 0.42em; border-radius: 7px;
-  background: var(--sunken); border: 1px solid var(--line); color: var(--ink); white-space: nowrap; }
+  background: var(--sunken); border: 1px solid var(--line); color: var(--ink); line-height: 1.3; }
 
 article > table, .scene .step > table { width: 100%; max-width: 52rem; margin: 22px 0; border-collapse: separate; border-spacing: 0; font-size: 1rem;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
@@ -211,6 +211,25 @@ button.run:not(:disabled):hover { background: var(--accent); color: var(--accent
 .cell[data-failed] .cell-out { box-shadow: inset 3px 0 0 var(--err); background: var(--err-bg); }
 .cell-err { display: block; color: var(--err); }
 @keyframes fade { from { opacity: 0; } }
+
+/* ── measure buttons (Measure.tsx) ───────────────────── */
+.measures { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; margin: 22px 0; align-items: start; }
+.measure { position: relative; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden; }
+.measure[data-busy]::after { content: ""; position: absolute; top: 0; left: 0; height: 2px; width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent-2), transparent); animation: busy 1.1s ease-in-out infinite; }
+.measure-out { margin-top: 14px; animation: fade 0.3s both; }
+.measure-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.measure-tiles > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--sunken);
+  border: 1px solid var(--line); }
+.measure-tiles small { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--mute); }
+.measure-tiles b { font-family: var(--mono); font-size: 1.05rem; font-weight: 650; color: var(--ink); line-height: 1.3; }
+.measure-tiles span { font-size: 12px; line-height: 1.35; color: var(--mute); }
+.measure-out p { margin: 10px 0 0; font-size: 13px; color: var(--soft); }
+.measure-mark { display: inline-block; margin-bottom: 10px; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--bash); border: 1px solid color-mix(in srgb, var(--bash) 50%, transparent); }
+.measure-err { margin: 14px 0 0; padding: 12px 14px; border-radius: 10px; background: var(--err-bg); color: var(--err);
+  font-family: var(--mono); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ── pager ───────────────────────────────────────────── */
 .pager { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 96px; }

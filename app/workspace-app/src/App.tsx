@@ -1,13 +1,14 @@
 import { MDXProvider } from "@mdx-js/react";
 import { useEffect, useMemo, useState } from "react";
 import { Fence } from "./Cell";
+import { Measure } from "./Measure";
 import { Arrow, Chevron, Panel, PlayAll, Reset } from "./icons";
 import { COURSE, type Entry, LESSONS, type Lesson, MODULES, lessonsIn, partEntries, partTitle } from "./lessons";
 import { PageContext, type PageSession } from "./session";
 import { Scene, Step } from "./Scene";
 import { Widget } from "./Widget";
 
-const COMPONENTS = { pre: Fence, Widget, Scene, Step };
+const COMPONENTS = { pre: Fence, Widget, Scene, Step, Measure };
 
 const slugNow = () => decodeURIComponent(location.hash.replace(/^#\/?/, ""));
 const stored = (key: string, fallback: string) => {

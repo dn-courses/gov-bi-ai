@@ -16,7 +16,10 @@ import json
 import sys
 import traceback
 
-NAMESPACE: dict[str, object] = {"__name__": "__main__"}
+from store_lab import bq
+
+# `bq` is there for every cell: one BigQuery statement in the participant's own dataset (store_lab.py).
+NAMESPACE: dict[str, object] = {"__name__": "__main__", "bq": bq}
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
