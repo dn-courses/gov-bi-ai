@@ -2,7 +2,7 @@
 // a filter on the day answered from the list of partitions, no filter, and a function around the
 // column that hides the day from the list.
 // Numbers: the page's dry runs on 2026-11-23 (AVG(num_bikes_available)), equal to
-// day1-reference/_measurements.md (2026-11-21/22): flat one day 27.5 GB (page 04's dry run, quoted); partitioned one day
+// day1-reference/_measurements.md (2026-11-21/22); MIN/MAX 14.4 GB and COUNT(*) 0 B are page 04's dry runs, quoted; flat one day 27.5 GB (page 04's dry run, quoted); partitioned one day
 // 218.7 MB; no filter 13.1 GB; EXTRACT(MONTH …) = 9 27.5 GB; September as a range 6.6 GB.
 import { DAYS, SEP1, dayTiles, extra, fmt, on, t, widget, zone } from "./col-lib.js";
 import { code, meter, ptCss, stat } from "./pt-lib.js";
@@ -13,7 +13,7 @@ const steps = (D) => [
   { stop: "By day", title: "The same rows, partitioned by day", decisive: true,
     note: `${fmt(D.rows)} rows, partitioned by day. The warehouse keeps a list of its ${DAYS} partitions; the filter is compared with the list, and <b>1 of ${DAYS}</b> is read: ${D.day}, where the table with no layout reads ${D.flatDay} GB.` },
   { stop: "No filter", title: "No filter on the day: nothing to prune with",
-    note: `With no date in the <code>WHERE</code>, all ${DAYS} partitions are read, as if the table had no layout.` },
+    note: `With no date in the <code>WHERE</code>, all ${DAYS} partitions are read, as if the table had no layout. No footer answers it: <code>AVG</code> needs a sum, and statistics hold only counts, minimums and maximums, so every value of the column is read. BigQuery prices by the column's size anyway: a <code>MIN</code>/<code>MAX</code> dry run costs 14.4 GB, only <code>COUNT(*)</code> 0 B.` },
   { stop: "A function", title: "A function around the column hides the day",
     note: `<code>EXTRACT(MONTH …) = 9</code> means September to a person. To the engine it is a value to compute on every row, not a range to compare with the list: all ${DAYS} partitions.` },
 ];
