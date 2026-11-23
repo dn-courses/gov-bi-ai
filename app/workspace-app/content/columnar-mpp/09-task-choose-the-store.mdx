@@ -4,12 +4,7 @@ The same readings live in two stores. Eight workloads ask for them, each with it
 own number of runs a month. For each one you choose where the data lives and how it is laid out,
 build it, measure it, and write down three numbers. At the end you choose for all eight at once.
 
-You start from a table with no index at all. This removes the one earlier pages built; they create it
-again with `CREATE INDEX IF NOT EXISTS` when their cells are run again.
-
-```sql id=no-index
-DROP INDEX IF EXISTS station_status_station_time;
-```
+You start from a table with no index at all.
 
 ## The two stores
 
@@ -139,6 +134,17 @@ def run_pg(sql):
     return seconds
 
 
+
+def start_without_indexes():
+    """The exercise starts from a table with no index: only yours, named ho_…, are kept."""
+    with psycopg.connect(autocommit=True) as conn:
+        found = conn.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'station_status'"
+                             " AND indexname NOT LIKE 'ho\\_%'").fetchall()
+        for (name,) in found:
+            conn.execute(f'DROP INDEX "{name}"')
+
+
+start_without_indexes()
 print(f"your BigQuery dataset: {SANDBOX}")
 ```
 

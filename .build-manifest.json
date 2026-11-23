@@ -1,6 +1,6 @@
 {
   "course": "gov-bi-ai",
-  "master_sha": "83aa70e7191cd5742612bd42ad9803a1c75b6dcf",
+  "master_sha": "ef4e8d1e79cc4e0aff80502b0ef94c48e936ee75",
   "modules": {
     "docker": {
       "effective_level": "minimal",
