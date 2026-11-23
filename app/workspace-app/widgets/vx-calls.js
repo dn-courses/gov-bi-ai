@@ -1,6 +1,6 @@
 // vx-calls — why the work through the values is what costs, and the plan that does it two ways:
 // the column read into memory (cheap), then the same three operators (scan → filter → average)
-// handing on one row per call, then one batch of 2,048 values of the one column per call.
+// handing on one row per call, then one batch per call (drawn as batches of 3; the real one is 2,048).
 import { fmt, scene as build } from "@widget-lib/scene.js";
 import { stepper } from "@widget-lib/stepper.js";
 
@@ -32,7 +32,8 @@ const CSS = `
 .lw .vxc .tk text { font:600 14px ui-monospace, Menlo, monospace; fill:var(--ink); }
 .lw .vxc .tk.drop rect { fill:var(--hot-bg); stroke:var(--hot); }
 .lw .vxc .tk.gone { opacity:0; }
-.lw .vxc .tk .tick { stroke:var(--accent); stroke-width:1; opacity:.45; }
+.lw .vxc .tk .grp { fill:none; stroke:var(--accent); stroke-width:1.5; stroke-dasharray:none; opacity:.8; }
+.lw .vxc .tk .cv { transition:opacity .35s; } .lw .vxc .tk .cv.drop rect { fill:var(--hot-bg); stroke:var(--hot); } .lw .vxc .tk .cv.gone { opacity:0; }
 .lw .vxc .slot { fill:none; stroke:var(--line); stroke-width:1; stroke-dasharray:3 3; }
 .lw .vxc .op.hit { fill:var(--accent-bg); stroke:var(--accent); }
 .lw .vxc .badge { fill:var(--panel); stroke:var(--line); stroke-width:1; transition:fill .3s, stroke .3s; }
@@ -62,7 +63,8 @@ const CSS = `
 const PX = 40, PW = 300, PH = 44;
 const OPS = [["scan", "scan", 208, "1"], ["filter", "filter · bikes &gt; 0", 124, "2"], ["avg", "average", 40, "3"]]; // key, label, y, badge
 const STRIP_Y = 296, CELL = 36, CX = 46; // eight cells of 36 across, x 46–334
-const ROW_TX = 296, BAT_W = 88, BAT_TX = PX + PW - BAT_W - 12; // where a token sits inside a pill
+const ROW_TX = 296, BAT_N = 3, BAT_W = 2 * CELL + 32, BAT_TX = PX + PW - BAT_W - 12; // where a token sits inside a pill
+// The batch run is a picture: the same eight values drawn in batches of 3 (the real batch is 2,048).
 const LINKS = [["cs", 252, STRIP_Y - 4], ["sf", 168, 208], ["fa", 84, 124]]; // the links into scan, filter, average
 const INTO = { scan: "cs", filter: "sf", avg: "fa" };
 
@@ -100,10 +102,11 @@ const plan = () => `<g class="st" data-on="1 2 3">
 
 const rowToken = (v, i) => `<g class="tk row" data-i="${i}" style="transform:translate(${CX + i * CELL}px,${STRIP_Y}px)">
   <rect x="0" y="0" width="32" height="28" rx="7"/><text x="16" y="15">${v}</text></g>`;
-const batchToken = (D, b) => `<g class="tk bat" data-i="${b}" style="transform:translate(${CX + b * 100}px,${STRIP_Y}px)">
-  <rect x="0" y="0" width="${BAT_W}" height="28" rx="7"/>
-  ${Array.from({ length: 10 }, (_, t) => `<line class="tick" x1="${6 + t * 8.4}" y1="5" x2="${6 + t * 8.4}" y2="23"/>`).join("")}
-  <text x="${BAT_W / 2}" y="15">${fmt(D.batch)}</text></g>`;
+const batchOf = (D, b) => D.handful.slice(b * BAT_N, b * BAT_N + BAT_N);
+const batchCount = (D) => Math.ceil(D.handful.length / BAT_N);
+const batchToken = (D, b) => `<g class="tk bat" data-i="${b}" style="transform:translate(${CX + b * BAT_N * CELL}px,${STRIP_Y}px)">
+  <rect class="grp" x="-4" y="-4" width="${(batchOf(D, b).length - 1) * CELL + 40}" height="36" rx="10"/>
+  ${batchOf(D, b).map((v, j) => `<g class="cv"><rect x="${j * CELL}" y="0" width="32" height="28" rx="7"/><text x="${j * CELL + 16}" y="15">${v}</text></g>`).join("")}</g>`;
 
 const counters = (cap) => `
   <text class="cap" x="396" y="42">${cap}</text>
@@ -138,9 +141,9 @@ const scene = (D) => `<svg viewBox="0 0 760 362">
     <text class="lbl" x="190" y="${STRIP_Y + 40}">bikes_available — 8 of ${fmt(D.values)} values</text></g>
   <g class="st" data-on="1 2">${D.handful.map(rowToken).join("")}</g>
   <g class="st" data-on="3">
-    ${[0, 1, 2].map((b) => `<rect class="slot" x="${CX + b * 100}" y="${STRIP_Y}" width="${BAT_W}" height="28" rx="7"/>`).join("")}
-    <text class="lbl" x="190" y="${STRIP_Y + 40}">3 of ${fmt(D.batches)} batches of ${fmt(D.batch)} values</text>
-    ${[0, 1, 2].map((b) => batchToken(D, b)).join("")}</g>
+    ${D.handful.map((_, i) => `<rect class="slot" x="${CX + i * CELL}" y="${STRIP_Y}" width="32" height="28" rx="7"/>`).join("")}
+    <text class="lbl" x="190" y="${STRIP_Y + 40}">drawn with batches of 3; the real batch is ${fmt(D.batch)}</text>
+    ${Array.from({ length: batchCount(D) }, (_, b) => batchToken(D, b)).join("")}</g>
   <rect class="zone st" data-on="1 2 3" x="380" y="14" width="366" height="334" rx="12"/>
   ${sqlCard(D)}
   <g class="st rows" data-on="2">${counters("ONE ROW PER CALL")}</g>
@@ -151,18 +154,21 @@ const opY = (k) => OPS.find((o) => o[0] === k)[2] + (PH - 28) / 2;
 const move = (tk, x, y) => { tk.style.transform = `translate(${x}px,${y}px)`; };
 
 // The beats of one token's climb: [wait ms, what the panel says, what changes], counting into `c`.
+// A row and a drawn batch of 3 climb at the same pace: one beat per hand-off.
 function climb(D, mode, tk, i, c, act) {
-  const row = mode === "row", tx = row ? ROW_TX : BAT_TX, n = row ? 1 : D.batch;
-  const kept = row ? (D.handful[i] > 0 ? 1 : 0) : D.firstKept[i], w = row && i >= 2 ? 280 : 650;
+  const row = mode === "row", tx = row ? ROW_TX : BAT_TX, vals = row ? [D.handful[i]] : batchOf(D, i);
+  const kept = vals.filter((v) => v > 0).length, w = row && i >= 2 ? 280 : 650, n = vals.length;
   const out = [
-    [w, row ? `row ${i + 1}: the scan reads ${D.handful[i]}` : `batch ${i + 1}: the scan reads ${fmt(n)} values`,
+    [w, row ? `row ${i + 1}: the scan reads ${vals[0]}` : `batch ${i + 1}: the scan reads ${n} values at once`,
       () => { act.light("scan"); move(tk, tx, opY("scan")); c.through += n; act.set(c); }],
-    [w, row ? "…and hands it to the filter" : "…and hands the batch to the filter",
+    [w, row ? "…and hands it to the filter" : "…and hands the whole batch to the filter",
       () => { act.light("filter"); move(tk, tx, opY("filter")); c.sf += 1; act.set(c); }],
   ];
   if (row && !kept) return out.concat([[w, "0 is not > 0: dropped, nothing handed on", () => tk.classList.add("drop")], [180, null, () => tk.classList.add("gone")]]);
-  if (!row) out.push([650, `${fmt(kept)} of ${fmt(n)} values are > 0`, () => { tk.querySelector("text").textContent = fmt(kept); }]);
-  out.push([w, row ? "…which hands it to the average" : `…which hands ${fmt(kept)} values to the average`,
+  const cells = row ? [] : [...tk.querySelectorAll(".cv")];
+  if (!row && kept < n) out.push([w, `${kept} of ${n} values are > 0: the 0 drops out`, () => cells.forEach((cv, j) => vals[j] > 0 || cv.classList.add("drop"))],
+    [180, null, () => cells.forEach((cv, j) => vals[j] > 0 || cv.classList.add("gone"))]);
+  out.push([w, row ? "…which hands it to the average" : `…which hands ${kept} values to the average in one call`,
     () => { act.light("avg"); move(tk, tx, opY("avg")); c.fa += 1; act.set(c); }]);
   return out.concat([[180, null, () => tk.classList.add("gone")]]);
 }
@@ -202,7 +208,8 @@ function reset(root, D) {
   root._timers = [];
   lighter(root)(null);
   root.querySelectorAll(".tk.row").forEach((tk, i) => { tk.classList.remove("drop", "gone"); move(tk, CX + i * CELL, STRIP_Y); });
-  root.querySelectorAll(".tk.bat").forEach((tk, b) => { tk.classList.remove("gone"); tk.querySelector("text").textContent = fmt(D.batch); move(tk, CX + b * 100, STRIP_Y); });
+  root.querySelectorAll(".tk.bat").forEach((tk, b) => { tk.classList.remove("gone"); move(tk, CX + b * BAT_N * CELL, STRIP_Y); });
+  root.querySelectorAll(".tk .cv").forEach((cv) => cv.classList.remove("drop", "gone"));
   root.querySelectorAll(".rows, .bats").forEach((panel) => {
     panel.querySelector(".play").classList.remove("busy"); panel.querySelector(".now").textContent = "not started";
     panel.querySelectorAll(".n-sf, .n-fa, .n-in, .n-all").forEach((n) => { n.textContent = "0"; });

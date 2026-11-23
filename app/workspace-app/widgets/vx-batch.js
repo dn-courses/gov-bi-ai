@@ -12,15 +12,15 @@ import { stepper } from "@widget-lib/stepper.js";
 const CAPTURED = {
   values: 25920000, lane: [2, 1, 4, 0, 3, 2, 2, 0],
   perValue: [["one row per call", 40.89, ""], ["2,048 per call", 5.91, ""], ["one call for the whole column", 0.22, "on"]],
-  sizes: [["one row per call", "25,920,000 rows", 1.1, ""], ["batches of 64", "405,000 batches", 3.9, "warm"],
-    ["batches of 2,048", "12,657 batches", 0.15, "on"], ["batches of 65,536", "396 batches", 0.02, ""]],
+  sizes: [["batches of 64", "405,000 calls", 3.9, "warm"], ["batches of 2,048", "12,657 calls", 0.15, "on"],
+    ["batches of 65,536", "396 calls", 0.02, ""]],
 };
 
 const steps = () => [
   { stop: "One instruction", title: "One instruction, many values",
     note: `Press <b>Play</b>. A batch holds values of one type side by side, so the compiled loop can load eight 2-byte values into one 128-bit register and add all eight with <b>one instruction</b> (SIMD). Fed one value at a time, the CPU spends an instruction on each.` },
   { stop: "Batch size", title: "Every call has a fixed cost",
-    note: `Batches of 64 are slower than rows: every batch pays a few pyarrow calls, each far dearer than a step of a Python loop, and 405,000 batches pay them 405,000 times. Larger batches pay that fixed cost less often. The limit is memory: a batch is as large as stays comfortably in the fast memory beside the CPU while every operator works on it.` },
+    note: `Two levels. The <b>register</b> holds 8 values: one instruction. The <b>batch</b> is what one operator hands the next in one call, and inside it the loop still goes 8 at a time: a batch of 2,048 is about 256 instructions, one of 65,536 about 8,192, never one tick. Batch size only decides how often a call's fixed cost is paid. A Python call is very expensive, so here bigger keeps winning; a compiled engine's calls are cheap, so it stops around 2,048, where a batch of a few columns stays in the CPU's cache.` },
 ];
 
 const CSS = `
@@ -37,6 +37,10 @@ const CSS = `
 .lw .vxb .tagbg.hot { fill:var(--hot-bg); stroke:var(--hot); }
 .lw .vxb text.tg { font:600 12px system-ui, sans-serif; fill:var(--accent); }
 .lw .vxb text.tg.hot { fill:var(--hot); }
+.lw .vxb text.tg.l { text-anchor:start; }
+.lw .vxb .batchbx { fill:none; stroke:var(--mute); stroke-width:1.5; stroke-dasharray:5 4; }
+.lw .vxb .lanebx { fill:var(--cell); stroke:var(--line); stroke-width:1; } .lw .vxb .lanebx.on { fill:var(--accent-bg); stroke:var(--accent); stroke-width:1.5; }
+.lw .vxb .lanediv { stroke:var(--line); stroke-width:1; }
 .lw .vxb .play { cursor:pointer; pointer-events:auto; }
 .lw .vxb .st:not(.on) .play { pointer-events:none; }
 .lw .vxb .play rect { fill:var(--accent); stroke:none; transition:opacity .2s; } .lw .vxb .play text { fill:var(--accent-ink); font:650 14px system-ui, sans-serif; }
@@ -71,14 +75,29 @@ const perValue = (D) => { const scale = 360 / D.perValue[0][1];
   ${D.perValue.map(([label, ns, cls], i) => { const y = 310 + i * 30;
     return `<text class="l ${cls ? "acc" : ""}" x="34" y="${y}">${label}</text>${bar(270, y - 9, Math.max(3, ns * scale), 360, cls, `${ns} ns`)}`; }).join("")}`; };
 
+// A register: one lane of 8 values, drawn as a box split in eight.
+const reg = (x, y, cls) => `<rect class="lanebx ${cls}" x="${x}" y="${y}" width="32" height="22" rx="5"/>
+  ${Array.from({ length: 7 }, (_, t) => `<line class="lanediv" x1="${x + 4 * (t + 1)}" y1="${y + 4}" x2="${x + 4 * (t + 1)}" y2="${y + 18}"/>`).join("")}`;
+
+// The two levels: a batch (one call) is a strip of registers (one instruction each).
+const levels = () => `<text class="cap" x="34" y="44">ONE BATCH = ONE CALL, WORKED THROUGH 8 VALUES AT A TIME</text>
+  <rect class="batchbx" x="28" y="56" width="470" height="34" rx="8"/>
+  ${Array.from({ length: 12 }, (_, k) => reg(34 + k * 36, 62, k === 0 ? "on" : "")).join("")}
+  <text class="big l dim" x="470" y="73">…</text>
+  <text class="lbl l" x="512" y="66">batch of 2,048:</text><text class="lbl l" x="512" y="84">one call, about 256 instructions</text>
+  <text class="tg l" x="34" y="108">↑ one register: 8 values, one instruction</text>
+  <text class="lbl l" x="34" y="130">batch of 65,536: still one call, but about 8,192 instructions — never one tick</text>
+  <line class="rule" x1="34" y1="148" x2="726" y2="148"/>`;
+
 const bars = (D) => { const max = Math.max(...D.sizes.map((s) => s[2])), scale = 400 / max;
   return `<g class="st" data-on="1"><rect class="zone" x="14" y="14" width="732" height="386" rx="12"/>
-  <text class="cap" x="34" y="44">THE SAME THREE OPERATORS · ${fmt(D.values)} VALUES · TIME BY VALUES PER CALL</text>
-  ${D.sizes.map(([label, calls, s, cls], i) => { const y = 98 + i * 78;
-    return `<text class="l ${cls === "on" ? "acc" : cls === "warm" ? "hot" : ""}" x="34" y="${y}">${label}</text><text class="lbl l" x="34" y="${y + 22}">${calls}</text>
+  ${levels()}
+  <text class="cap" x="34" y="172">THE SAME BATCHED OPERATORS · ${fmt(D.values)} VALUES · ONLY THE BATCH SIZE CHANGES</text>
+  ${D.sizes.map(([label, calls, s, cls], i) => { const y = 204 + i * 52;
+    return `<text class="l ${cls === "on" ? "acc" : cls === "warm" ? "hot" : ""}" x="34" y="${y}">${label}</text><text class="lbl l" x="34" y="${y + 18}">${calls}</text>
       ${bar(216, y - 9, Math.max(3, s * scale), 400, cls, `${s} s`)}`; }).join("")}
-  ${tag(330, 98 + 78 + 30, 190, "slower than one row per call", "hot")}
-  ${tag(330, 98 + 2 * 78 + 30, 172, "fewer calls, less fixed cost")}
+  ${tag(330, 204 + 52 + 22, 172, "fewer calls, less fixed cost")}
+  <text class="lbl l" x="34" y="374">time ≈ calls × fixed cost + values × work per value: only the first part shrinks</text>
   </g>`; };
 
 const scene = (D) => `<svg viewBox="0 0 760 414">

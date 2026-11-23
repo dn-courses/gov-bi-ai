@@ -244,6 +244,9 @@ SELECT MIN(captured_at) AS first_reading, MAX(captured_at) AS last_reading
 FROM `enjoytech-bq-lab.gbfs.station_status`;
 ```
 
+The instructor ran this one for real, with the cache off: billed 14.43 GB, 3.2 s, about 21
+slot-minutes, every one of the 1,803,699,574 rows read. It is not a cell here; it reads 14 GB.
+
 </Step>
 </Scene>
 

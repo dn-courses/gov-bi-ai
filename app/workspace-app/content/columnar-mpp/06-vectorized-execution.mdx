@@ -114,6 +114,9 @@ for size in (64, 2048, 65536):
     print(f"batches of {size:>6,}: {time.perf_counter() - started:5.2f} s")
 ```
 
+The size sets how many calls there are, nothing more: inside every batch, large or small, the
+values still go through the register 8 at a time.
+
 </Step>
 </Scene>
 

@@ -7,19 +7,24 @@
 //   AVG(num_bikes_available), one day           27.5 GB
 //   COUNT(*), the whole table                   0 bytes
 //   MIN, MAX of captured_at                     14.4 GB
+// The real run of MIN/MAX (integrator, 2026-11-23, cache off, gbfs.station_status; not a page cell):
+//   dry run 14,429,596,592 B, billed 14,430,502,912 B; S00 read 1,803,699,574 rows in 3,060 pieces,
+//   wrote 3,060 partial rows; S01 one row; 3.2 s elapsed, about 21 slot-minutes.
+// DuckDB's footer answer, 705 kB: this page's st-footer cells (EXPLAIN ANALYZE, Data Read 704.7 kB).
 import { CSS, on, t, widget, zone } from "./ramp-lib.js";
 
 const CAPTURED = {
   rows: "1,803,699,574", tableGb: 167,
   cols: [["station_id", 42.6], ["system_id", 18.6], ["captured_at", 14.4], ["num_bikes_available", 13.1], ["the other 9 columns", 78.5]],
   day: "27.5 GB", count: "0 B", minmax: "14.4 GB",
+  run: { rows: "1,803,699,574", pieces: "3,060", billed: "14.43 GB", secs: "3.2 s", slotMin: 21 }, duck: "705 kB",
 };
 
 const steps = (D) => [
   { stop: "The meter", title: "A warehouse prices a query before it runs it", decisive: true,
     note: `BigQuery, a cloud warehouse, answers a <b>dry run</b> with the bytes the query would read, and runs nothing. One day of 127 is priced at <b>${D.day}</b>: the two columns it names, read whole.` },
   { stop: "Written down", title: "Some answers cost nothing",
-    note: `<code>COUNT(*)</code> of the whole table is priced at <b>0 bytes</b>: the row count is kept with the table. Its first and last moment are not: <code>MIN</code> and <code>MAX</code> read the column, ${D.minmax}. What an engine keeps written down differs; the dry run tells.` },
+    note: `<code>COUNT(*)</code> of the whole table is priced at <b>0 bytes</b>: the row count is kept with the table. Its first and last moment are not: <code>MIN</code> and <code>MAX</code> read the column, ${D.minmax}. BigQuery keeps min/max statistics for every block, but it uses them only to skip blocks a filter rules out, so an unfiltered <code>MIN(captured_at)</code> reads, and on-demand bills, the whole column: about 8 bytes a row for a <code>TIMESTAMP</code>. DuckDB answered the same from the footer, reading ${D.duck}.` },
 ];
 
 const PX = 5; // px per GB in the column chart
@@ -48,10 +53,21 @@ const kept = (D) => `${zone(14, 198, 360, 172, "THE WHOLE TABLE")}${zone(386, 19
   ${query(48, 254, ["SELECT COUNT(*)", "FROM   gbfs.station_status"], 320)}${t(194, 326, D.count, "huge ok")}${t(194, 354, "the row count is kept with the table", "lbl")}
   ${query(420, 248, ["SELECT MIN(captured_at),", "       MAX(captured_at)", "FROM   gbfs.station_status"], 320)}${t(566, 326, D.minmax, "huge hot")}${t(566, 354, "read: the whole column", "lbl")}`;
 
-const scene = (D) => `<svg viewBox="0 0 760 378">
+// The real run of MIN/MAX: the plan's two stages and what it cost, against DuckDB's footer.
+const run = (D) => `${zone(14, 382, 732, 112, "THE REAL RUN OF MIN, MAX — THE INSTRUCTOR'S, CACHE OFF")}
+  ${t(34, 424, `S00  read ${D.run.rows} rows in ${D.run.pieces} pieces`, "l mono")}${t(486, 424, `→ ${D.run.pieces} partial rows`, "l mono")}
+  ${t(34, 448, "S01  one row", "l mono")}
+  ${t(34, 478, `billed ${D.run.billed} · ${D.run.secs} · about ${D.run.slotMin} slot-minutes`, "l mono hot")}
+  ${t(726, 478, `DuckDB, from its footer: ${D.duck}`, "r mono ok")}`;
+
+// Each step is only as tall as its content.
+const HEIGHT = [378, 502];
+const after = (root, at) => root.querySelector("svg").setAttribute("viewBox", `0 0 760 ${HEIGHT[at]}`);
+
+const scene = (D) => `<svg viewBox="0 0 760 ${HEIGHT[0]}">
   ${on("0 1", columns(D))}
   ${on("0", priced(D))}
-  ${on("1", kept(D))}
+  ${on("1", kept(D) + run(D))}
 </svg>`;
 
 const css = CSS("sdr") + `
@@ -65,4 +81,4 @@ const css = CSS("sdr") + `
 .lw .sdr .term { fill:var(--cell); }
 `;
 
-export default widget({ key: "sdr", label: "The dry run", css, steps, scene, captured: CAPTURED });
+export default widget({ key: "sdr", label: "The dry run", css, steps, scene, captured: CAPTURED, after });
