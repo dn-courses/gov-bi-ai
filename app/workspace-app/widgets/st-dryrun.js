@@ -1,7 +1,7 @@
 // st-dryrun — the dry run: a cloud warehouse prices a query in bytes before running it. The meter
 // is the columns the query must read; some answers are kept with the table. (Clustering in the
 // warehouse belongs to the Partitioning page.)
-// Dry runs from the page's own bigquery cells, 2026-11-23 (and _measurements.md, 2026-11-16/21):
+// Dry runs from this Scene's own bigquery cells (SELECT * and one per charted column), re-run 2026-11-23:
 //   gbfs.station_status: 1,803,699,574 rows, 167.2 GB; columns system_id 18.6 GB, station_id 42.6,
 //   captured_at 14.4, num_bikes_available 13.1; "the other 9 columns" = 167.2 - those four = 78.5 GB
 //   AVG(num_bikes_available), one day           27.5 GB
@@ -10,7 +10,8 @@
 // The real run of MIN/MAX (integrator, 2026-11-23, cache off, gbfs.station_status; not a page cell):
 //   dry run 14,429,596,592 B, billed 14,430,502,912 B; S00 read 1,803,699,574 rows in 3,060 pieces,
 //   wrote 3,060 partial rows; S01 one row; 3.2 s elapsed, about 21 slot-minutes.
-// DuckDB's footer answer, 705 kB: this page's st-footer cells (EXPLAIN ANALYZE, Data Read 704.7 kB).
+// DuckDB's footer answer, 705 kB: this Scene's duckdb cell, EXPLAIN ANALYZE count/min/max, Data Read
+// 704.7 kB (re-run 2026-11-23). The row count is the real MIN/MAX run's S00, drawn with its SQL.
 import { CSS, on, t, widget, zone } from "./ramp-lib.js";
 
 const CAPTURED = {

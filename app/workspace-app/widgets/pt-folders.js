@@ -2,9 +2,11 @@
 // filter on the column the day was made from opens every file again.
 // Numbers: the page's own cells, run on 2026-11-23 through the lab (DuckDB 2.0.0, EXPLAIN ANALYZE and
 // parquet_file_metadata): partitioning_by_day 90 files, 45.4 MB; day = … 1 / 90 files, 214.3 kB; captured_at range on the
-// folder 90 files read, 3 / 270 row groups, 1.6 MB; the one file's 174.4 MB is page 04's re-measure, quoted.
+// folder 90 files read, 3 / 270 row groups, 1.6 MB; the one file's 174.4 MB is page 04's one-day query, quoted (not re-run here) and drawn with its SQL;
+// re-measured 2026-11-23: Data Read 174.4 MB, 211 / 211 row groups.
 import { extra, on, t, widget, zone } from "./col-lib.js";
 import { AUG1, bind, calendar, code, meter, playButton, playCss, ptCss, run, stat, stop } from "./pt-lib.js";
+import { sql, sqlCss } from "./cost-lib.js";
 
 const CAPTURED = {
   oneFileMb: 174.4, days: 90, folderMb: 45.4, dayKb: 214.3, dayRows: "288,000",
@@ -20,7 +22,7 @@ const steps = (D) => [
     note: `The same day, written on <code>captured_at</code>. The reader does not know that <code>day</code> was made from it, so it opens all ${D.days} files to read their footers, and only then skips row groups.` },
 ];
 
-const CSS = (k) => extra(k) + ptCss(k) + playCss(k) + `
+const CSS = (k) => extra(k) + ptCss(k) + playCss(k) + sqlCss(k) + `
 .lw .${k}[data-at="0"] .dy[data-i="${AUG1}"] rect { fill:var(--accent-bg); stroke:var(--accent); stroke-width:2; }
 .lw .${k}[data-at="0"] .dy[data-i="${AUG1}"] text { fill:var(--accent); font-weight:700; }
 .lw .${k}[data-at="2"] .dy rect { fill:var(--hot-bg); stroke:var(--hot); }
@@ -41,7 +43,9 @@ const folder = (D) => on("0", zone(14, 220, 732, 174, "ONE FOLDER, ONE FILE")
   + t(30, 346, "The file holds no day column. The folder's name is the value,", "lbl l")
   + t(30, 368, "so the day of every file is known without opening it.", "lbl l"));
 
-const prune = (D) => on("1", zone(14, 220, 732, 174, "THE FILTER, AGAINST THE FOLDER NAMES")
+const ONE_FILE = "SELECT avg(bikes_available) FROM 'station_status.parquet'\nWHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'\n  AND captured_at <  TIMESTAMPTZ '2026-08-02 00:00:00+00';";
+const prune = (D) => on("1", zone(14, 220, 732, 274, "THE FILTER, AGAINST THE FOLDER NAMES")
+  + t(30, 410, `THE ONE FILE'S ${D.oneFileMb} MB: THIS QUERY, ON THE PAGE STATISTICS AND SKIPPING`, "cap") + sql(30, 434, ONE_FILE)
   + code(30, 274, "WHERE day = DATE '2026-08-01'", "acc") + playButton(634, 258)
   + t(30, 312, READY, "lbl l now")
   + `<g class="res">${meter({ x: 200, y: 334, w: 400, full: 400, label: "the one file", value: `${D.oneFileMb} MB`, cls: "warm", tone: "hot" })
@@ -53,6 +57,7 @@ const keyless = (D) => on("2", zone(14, 220, 732, 174, "THE SAME DAY, WRITTEN ON
   + stat(390, 324, `${D.keyless.groupsRead} of ${D.keyless.groupsAll}`, `row groups then read: ${D.keyless.mb} MB`)
   + t(30, 382, "The statistics work, inside every file. Only a filter on the key itself is compared with the folder names.", "lbl l"));
 
+const HEIGHT = [404, 504, 404]; // the Prune step also shows the one file's query
 const scene = (D) => `<svg viewBox="0 0 760 404">${grid(D)}${folder(D)}${prune(D)}${keyless(D)}</svg>`;
 
 const reset = (root) => {
@@ -76,6 +81,7 @@ function play(root, button) {
 }
 
 function after(root, at) {
+  root.querySelector("svg").setAttribute("viewBox", `0 0 760 ${HEIGHT[at]}`);
   bind(root, { 1: play });
   if (at !== 1 || !root._timers?.length) reset(root);
 }

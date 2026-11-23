@@ -8,21 +8,21 @@ import { fmt, on, t, widget, zone, extra } from "./col-lib.js";
 //   files   parquet_metadata of the four writes: after encoding / on disk (MB)
 //   ms      SELECT count(DISTINCT captured_at), sum(docks_available) — best of 5, all cores
 //   readMb  the on-disk size of those two columns in each file
-//   oneCore the same query with SET threads = 1, best of 3 — re-measured in one held call, middle of
-//           three runs: 131.2–132.5, 226.2–226.6, 142.3–145.6, 142.1–143.0 ms
-// Re-measured 2026-11-23 on the 346 MB file page 01 writes (ORDER BY station_id, captured_at), in one
-// held lab call; timings are the middle of three runs (all cores: 40.9–51.7, 57.5–64.6, 42.3–50.5,
-// 40.3–61.9 ms; one core: see oneCore).
+//   oneCore the same query with SET threads = 1, best of 3
+// Re-measured 2026-11-23 on the 346 MB file page 01 writes (ORDER BY station_id, captured_at): the
+// page's own cells, run through the lesson app in one held lab call, and the widget shows exactly the
+// statistic they print (best of 5; one core, best of 3). A second run of the same cells in that call
+// printed 36.8, 46.6, 34.0, 33.9 ms and 137.7, 235.2, 148.4, 149.0 ms.
 const CAPTURED = {
   cols: [["captured_at", 207.4, "PLAIN"], ["last_reported", 207.4, "PLAIN"], ["bikes_available", 16.3, "dictionary"],
     ["ebikes_available", 6.6, "dictionary"], ["docks_available", 5.6, "dictionary"], ["bikes_disabled", 3.4, "dictionary"],
     ["docks_disabled", 3.4, "dictionary"], ["3 yes/no, each", 3.2, "PLAIN"], ["vehicle_types", 0.1, "dictionary"],
     ["legacy_id", 0.1, "dictionary"], ["name", 0.1, "dictionary"], ["station_id", 0.0, "dictionary"], ["system_id", 0.0, "dictionary"]],
   files: [
-    { enc: "timestamps plain", codec: "not compressed", encoded: 460.0, disk: 460.0, readMb: 213.0, ms: 48.8, oneCore: 131.3 },
-    { enc: "timestamps plain", codec: "compressed", encoded: 460.1, disk: 345.5, readMb: 157.8, ms: 63.4, oneCore: 226.5 },
-    { enc: "timestamps as differences", codec: "not compressed", encoded: 67.5, disk: 67.5, readMb: 16.7, ms: 49.1, oneCore: 144.0 },
-    { enc: "timestamps as differences", codec: "compressed", encoded: 67.5, disk: 31.9, readMb: 1.0, ms: 46.8, oneCore: 142.6 },
+    { enc: "timestamps plain", codec: "not compressed", encoded: 460.0, disk: 460.0, readMb: 213.0, ms: 36.7, oneCore: 135.7 },
+    { enc: "timestamps plain", codec: "compressed", encoded: 460.1, disk: 345.5, readMb: 157.8, ms: 46.7, oneCore: 233.9 },
+    { enc: "timestamps as differences", codec: "not compressed", encoded: 67.5, disk: 67.5, readMb: 16.7, ms: 33.0, oneCore: 148.3 },
+    { enc: "timestamps as differences", codec: "compressed", encoded: 67.5, disk: 31.9, readMb: 1.0, ms: 33.4, oneCore: 151.4 },
   ],
   linkMBps: 125, // a 1 Gbit/s network moves 125 MB a second: arithmetic, not a measurement
 };

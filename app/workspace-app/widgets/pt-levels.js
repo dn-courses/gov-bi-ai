@@ -3,7 +3,8 @@
 // warehouse: partitions by day, then blocks clustered by system.
 // Numbers: the page's own cells, run on 2026-11-23 through the lab. DuckDB 2.0.0, one week and
 // station 42 on partitioning_by_day: 7 / 90 files, 7 / 21 row groups, 797.5 kB (re-run 2026-11-23 on page 01's station-sorted file). BigQuery dry runs
-// on gbfs.station_status_partitioned: one day 218.7 MB, the same day and system lyft_nyc 97.9 MB
+// (this Scene's cells, re-run 2026-11-23): gbfs.station_status one day 27.5 GB; on
+// gbfs.station_status_partitioned: one day 218.7 MB, the same day and system lyft_nyc 97.9 MB
 // (also in day1-reference/_measurements.md; the run read 3,765,364 rows).
 import { SEP1, arrow, dayTiles, extra, on, t, widget, zone } from "./col-lib.js";
 import { AUG1, bind, calendar, code, playButton, playCss, ptCss, run, stop } from "./pt-lib.js";

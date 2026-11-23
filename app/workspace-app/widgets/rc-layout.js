@@ -3,9 +3,10 @@
 // by its key is one record in the first and one value from every strip in the second.
 // The three rows are real: station 42, 43 and 44 at 2026-08-01 12:00 (names cut short), five of the 15
 // columns and a cell that stands for the other ten. Measured 2026-11-23 on the Day-1 lab, the page's cells:
-//   row bytes   pg_column_size over a 0.1 % sample        -> 13 of 234 bytes are the three columns; lp_len over
-//               1,001 pages spread through the table: average 234, 224 to 245
-//   row store   EXPLAIN (ANALYZE, BUFFERS) monthly average  -> every page, 777,595 (6075 MB)
+//   row bytes   the cell: pg_column_size over TABLESAMPLE SYSTEM (0.1) REPEATABLE (1) -> 13 of 234 bytes
+//               are the three columns (over every row: 233.7)
+//   row store   EXPLAIN (ANALYZE, BUFFERS) monthly average, a cell of step 2 -> every page, 777,600 (6075 MB)
+//   readings    the cell of step 0: stations 42–44 at 2026-08-01 12:00+00 -> NYC 2, JC 7, BOS 13
 //   column      DuckDB EXPLAIN ANALYZE, same query, on station_status.parquet -> Data Read 174.4 MB (file sorted by station, time; re-run 2026-11-23)
 //   one row     Postgres, through the index: Buffers 5, 0.006–0.02 ms; DuckDB: 2 / 211 row groups,
 //               Data Read 3.9 MB, 5–8 ms

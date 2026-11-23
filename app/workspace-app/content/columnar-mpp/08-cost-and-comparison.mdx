@@ -6,8 +6,17 @@ query. So the cost of a query is decided when it is written, and it is part of t
 <Scene widget="cost-meter">
 <Step>
 
-A helper that turns a dry run's bytes into dollars, and the monthly average on the flat table,
-which reads 46.1 GB:
+The monthly average on the flat table:
+
+```bigquery
+-- dry run
+SELECT TIMESTAMP_TRUNC(captured_at, MONTH) AS month, system_id,
+       AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+GROUP BY 1, 2;
+```
+
+A helper that turns a dry run's bytes into dollars, and that query's price:
 
 ```python
 PRICE_PER_TIB = 6.25          # BigQuery on-demand, US
@@ -38,10 +47,28 @@ FROM `enjoytech-bq-lab.gbfs.station_status`
 LIMIT 10;
 ```
 
+```bigquery
+-- dry run
+SELECT num_bikes_available
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+LIMIT 10;
+```
+
+The bills in the scene come from real runs with the cache off. Nobody runs these two here: each
+bills gigabytes.
+
 </Step>
 <Step>
 
-The same two queries on both meters:
+The same two queries on both meters. The exact median:
+
+```bigquery
+-- dry run
+SELECT DISTINCT system_id,
+       PERCENTILE_CONT(num_bikes_available, 0.5) OVER (PARTITION BY system_id) AS median_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+ORDER BY system_id;
+```
 
 ```python
 measured = [("monthly average", 46.1, "about 38"),
@@ -76,20 +103,51 @@ GROUP BY system_id;
 
 </Step>
 <Step>
-</Step>
-<Step>
+
+```bigquery
+-- dry run
+SELECT system_id, AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02'
+GROUP BY system_id;
+```
+
 </Step>
 <Step>
 
+```bigquery
+-- dry run
+SELECT system_id, AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02'
+  AND system_id = 'lyft_nyc'
+GROUP BY system_id;
+```
+
+</Step>
+<Step>
+
+The summary's daily build, priced by a dry run:
+
+```bigquery
+-- dry run
+SELECT DATE(captured_at) AS day, system_id,
+       AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02'
+GROUP BY day, system_id;
+```
+
 The tile's month, lever by lever, priced from the measured bytes. The summary is filled once a day
-from one partition, the same 366.5 MB as the one-day query.
+from one partition: 366.5 MB, as the one-day query. A read of it touches about 60 kB, but on demand
+bills at least 10 MB for each table a query references.
 
 ```python
 runs = 4_400
 for what, gb in [("SELECT *", 167.2), ("two columns", 31.7), ("one day", 0.3665),
                  ("one day, one system", 0.0979)]:
     print(f"{what:20} {gb:9.4f} GB a run  ${runs * dollars(gb):9,.2f} a month")
-print(f"{'summary':20} built 22 times    ${22 * dollars(0.3665):9,.2f} a month")
+print(f"{'summary':20}    0.0100 GB a run  ${runs * dollars(0.01) + 22 * dollars(0.3665):9,.2f} a month (with 22 builds)")
 ```
 
 The detail table stays: a summary answers only the questions it was built for.

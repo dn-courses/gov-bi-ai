@@ -63,12 +63,35 @@ FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
 WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
 ```
 
+The same day on `station_status`, the table with no layout:
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
+```
+
 </Step>
 <Step>
 
 ```bigquery
 -- dry run
 SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`;
+```
+
+The first and last moment, and the row count:
+
+```bigquery
+-- dry run
+SELECT MIN(captured_at) AS first_reading, MAX(captured_at) AS last_reading
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`;
+```
+
+```bigquery
+-- dry run
+SELECT COUNT(*) AS readings
 FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`;
 ```
 
@@ -107,6 +130,10 @@ COPY (SELECT *, date_trunc('month', captured_at)::DATE AS month FROM 'station_st
   TO 'partitioning_by_month' (FORMAT parquet, PARTITION_BY (month), OVERWRITE_OR_IGNORE);
 ```
 
+```bash needs=by-month
+du -sb partitioning_by_month
+```
+
 ```duckdb needs=by-month
 EXPLAIN ANALYZE
 SELECT avg(bikes_available)
@@ -117,6 +144,16 @@ WHERE month = DATE '2026-08-01'
 
 </Step>
 <Step>
+
+One day of the folders by day:
+
+```duckdb needs=by-day
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM read_parquet('partitioning_by_day/*/*.parquet', hive_partitioning = true)
+WHERE day = DATE '2026-08-01';
+```
+
 </Step>
 <Step>
 
@@ -178,7 +215,24 @@ WHERE day >= DATE '2026-08-01' AND day < DATE '2026-08-08' AND station_id = 42;
 </Step>
 <Step>
 
-`station_status_partitioned` was also created with `CLUSTER BY system_id, station_id`.
+`station_status_partitioned` was also created with `CLUSTER BY system_id, station_id`. The same
+day on the table with no layout, then by partition alone:
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
+```
+
+```bigquery
+-- dry run
+SELECT AVG(num_bikes_available) AS avg_bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
+```
+
+And by partition and cluster:
 
 ```bigquery
 -- dry run

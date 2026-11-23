@@ -229,6 +229,33 @@ FROM `enjoytech-bq-lab.gbfs.station_status`
 WHERE captured_at >= '2026-09-01' AND captured_at < '2026-09-02';
 ```
 
+What the whole table would cost, and each column of the chart, one dry run each:
+
+```bigquery
+-- dry run
+SELECT * FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+```bigquery
+-- dry run
+SELECT station_id FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+```bigquery
+-- dry run
+SELECT system_id FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+```bigquery
+-- dry run
+SELECT captured_at FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
+```bigquery
+-- dry run
+SELECT num_bikes_available FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
 </Step>
 <Step>
 
@@ -246,6 +273,16 @@ FROM `enjoytech-bq-lab.gbfs.station_status`;
 
 The instructor ran this one for real, with the cache off: billed 14.43 GB, 3.2 s, about 21
 slot-minutes, every one of the 1,803,699,574 rows read. It is not a cell here; it reads 14 GB.
+
+DuckDB, asked the same of the file:
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT count(*), min(captured_at), max(captured_at)
+FROM 'station_status.parquet';
+```
+
+Find `Data Read`.
 
 </Step>
 </Scene>

@@ -7,7 +7,7 @@
 // Re-measured 2026-11-23 after page 01 rewrote station_status.parquet sorted by (station_id, captured_at),
 // 346,091,490 bytes, in one semaphore call:
 //   Postgres, max_parallel_workers_per_gather = 0, Seq Scan: 3.47-3.99 s warm (6.6 s cold),
-//   777,595 pages of 8 kB (6 GB)
+//   777,600 pages of 8 kB (6 GB; page 01 re-measured 2026-11-23: the rows fill 777,595, the last 5 are empty)
 //   DuckDB threads = 1 on station_status.parquet: 1.30-1.45 s, Data Read 174.4 MB
 //   DuckDB, every thread: 0.246-0.305 s
 // BigQuery on 1,803,699,574 rows: 46.1 GB, about 2 s elapsed, 2,281 slot-seconds (about 38 slot-minutes), 3,060 parallel

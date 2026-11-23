@@ -6,7 +6,8 @@
 //   ls -l --si station_status.parquet       -> 346,091,490 bytes = 346 MB (file sorted by station, time)
 //   avg(bikes_available) per system, DuckDB on the file and pyarrow on the file: the same six numbers
 //   the daily summary COPY                  -> 540 rows, 1,940 bytes (ls -l)
-//   the three raw readings shown in the file: station 42, 43, 44 at 2026-08-01 12:00 (as in rc-layout)
+//   the three raw readings shown in the file: station 42, 43, 44 at 2026-08-01 12:00, DuckDB on the file
+//   (the cell of the last step) -> NYC 2, JC 7, BOS 13
 import { table, TABLE_CSS } from "@widget-lib/table.js";
 import { extra, on, t, widget } from "./col-lib.js";
 

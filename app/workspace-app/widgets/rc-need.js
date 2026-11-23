@@ -1,15 +1,16 @@
 // rc-need — the need: a question about a few rows is answered from a few pages through an index; the
 // monthly average wants every row, so every page is read and the index is left unused.
 // Measured 2026-11-23 on the Day-1 lab (PostgreSQL 18, `station_status`, 90 days):
-//   size        quoted from Disk, Memory, CPU (CLEANUP.md)    -> 25,920,000 rows, 777,595 pages, 6075 MB
-//   per page    25,920,000 / 777,595 = 33.3 rows (page 0 holds 35)
+//   size        this Scene's first cell: count(*), pg_relation_size / 8192, pg_size_pretty -> 25,920,000
+//               rows, 777,600 pages, 6075 MB (re-measured 2026-11-23; rows sit on pages 0–777,594)
+//   per page    25,920,000 / 777,600 = 33.3 rows (page 0 holds 35)
 //   one station EXPLAIN (ANALYZE, BUFFERS) avg(bikes_available), station 42 on 2026-08-01:
 //               Index Scan, 288 rows, Buffers 16 (hit 10, read 6), 0.12 ms (1.4 ms when read cold)
-//   every row   EXPLAIN (ANALYZE, BUFFERS) the monthly average: Parallel Seq Scan, Buffers 777,595 at the
+//   every row   EXPLAIN (ANALYZE, BUFFERS) the monthly average: Parallel Seq Scan, Buffers hit 1,791 + read 775,809 = 777,600 at the
 //               scan node, 18 rows out, the index present and unused
 import { arrow, extra, fmt, on, t, widget } from "./col-lib.js";
 
-const CAPTURED = { rows: 25920000, pages: 777595, mb: 6075, perPage: 33, dayRows: 288, dayPages: 16, dayMs: "0.1", out: 18 };
+const CAPTURED = { rows: 25920000, pages: 777600, mb: 6075, perPage: 33, dayRows: 288, dayPages: 16, dayMs: "0.1", out: 18 };
 
 const steps = (D) => [
   { stop: "The table", title: `The table: ${fmt(D.pages)} pages`,

@@ -3,7 +3,8 @@
 // and the owners finish their keys before one worker gathers the answer. Steps 1–4 have Play.
 // Numbers: the page's own Python cells, run 2026-11-23 in the lesson app on the postgres lab
 // (rows are deterministic). The sample rows are the cells' generator, drawn by mp-lib's bikes();
-// owners are crc32(system) % 4, as the cells print. The capture's row count: _measurements.md.
+// owners are crc32(system) % 4, as the cells print. The capture's row count: this page's step-0 cell,
+// SELECT COUNT(*) on gbfs.station_status, run 2026-11-23 (1,803,699,574 rows, 0 bytes read).
 import { LOOK, OWNS, SYSTEMS, at, beats, bikes, bindPlays, countUp, fmt, move, on, play, snap, stop, t, tag, tile, widget, zone } from "./mp-lib.js";
 import { TABLE_CSS, table } from "@widget-lib/table.js";
 

@@ -5,10 +5,10 @@ import { arrow, extra, fmt, from, on, t, widget, zone } from "./col-lib.js";
 
 // Measured 2026-11-23 from this page's cells, in the lesson app on the postgres lab: `df -h .` 741G;
 // MemTotal 16,424,480 kB (about 16 GB); `nproc` 12; inet_client_addr 192.168.107.3,
-// inet_server_addr 192.168.107.2; station_status 6,075 MB (777,595 pages); shared_buffers 128MB.
+// inet_server_addr 192.168.107.2; station_status 6,075 MB (777,600 pages, re-measured); shared_buffers 128MB.
 const CAPTURED = {
   diskGb: 741, memGb: 16, cores: 12, me: "192.168.107.3", db: "192.168.107.2",
-  tableMb: 6075, pages: 777595, bufferMb: 128,
+  tableMb: 6075, pages: 777600, bufferMb: 128,
 };
 
 const steps = (D) => [

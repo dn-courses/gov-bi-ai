@@ -1,11 +1,19 @@
 // cost-meter — what a warehouse's meter counts. On demand: the bytes a query reads, priced per TiB
 // (Play: the three columns of the monthly average are read and the meter ticks into dollars); the same
-// query run by a dashboard's audience; LIMIT reads the whole column. Capacity: slot time reserved.
+// query run by a dashboard's audience; LIMIT 10 on a table not clustered and on a clustered one, each
+// query's SQL beside what it billed. Capacity: slot time reserved.
+// LIMIT, measured by the integrator 2026-11-23, real runs with the cache off:
+//   gbfs.station_status (not clustered): dry run 13,078,535,136 B; billed 13,078,888,448 B (the whole
+//   column); 0.6 s; plan: S00 completed 1,753 of 3,060 work units, reading 1,032,366,962 of the 1.8 B
+//   rows, then stopped; S01 returned 10. The engine stopped early, yet billed the whole column.
+//   gbfs.station_status_partitioned (by day, clustered by system_id, station_id): dry run "upper bound
+//   of 13,078,535,136 bytes"; billed 5,730,467,840 B; S00 completed 1,136 of 2,582 work units.
 // Sizes: dry runs from the app's bigquery cell, 2026-11-23 (monthly average on gbfs.station_status
-// 46.1 GB, LIMIT 10 13.1 GB); column sizes, elapsed (about 2 s), slot time (2,281 slot-seconds, about 38 slot-minutes; the
+// 46.1 GB); column sizes, elapsed (about 2 s), slot time (2,281 slot-seconds, about 38 slot-minutes; the
 // median 407-538) and its 31.7 GB from day1-reference/_measurements.md. $6.25 per TiB is BigQuery's
 // documented US on-demand price. The audience (50 viewers, 4 opens a day, 22 days) is an example.
 import { extra, fmt, on, pill, t, widget, zone } from "./col-lib.js";
+import { sql, sqlCss } from "./cost-lib.js";
 
 const TIB_GB = 2 ** 40 / 1e9; // 1,099.5 GB
 const PRICE = 6.25;
@@ -13,8 +21,14 @@ const dollars = (gb) => (gb / TIB_GB) * PRICE;
 
 const CAPTURED = {
   cols: [["captured_at", 14.4], ["system_id", 18.6], ["num_bikes_available", 13.1]],
-  monthly: 46.1, elapsed: 2, limitGb: 13.1, viewers: 50, opens: 4, days: 22,
+  monthly: 46.1, elapsed: 2, viewers: 50, opens: 4, days: 22,
   avg: { gb: 46.1, slot: [38] }, median: { gb: 31.7, slot: [407, 538] },
+  limit: [
+    { cap: "NOT CLUSTERED — gbfs.station_status", table: "station_status", dry: "13.1 GB", sure: "exact",
+      billed: 13.078888448, done: 1753, units: 3060, how: "(1.03 of 1.8 billion rows), yet billed the whole column" },
+    { cap: "PARTITIONED, CLUSTERED — gbfs.station_status_partitioned", table: "station_status_partitioned", dry: "≤ 13.1 GB",
+      sure: "an upper bound", billed: 5.73046784, done: 1136, units: 2582, how: "and billed less: known only after the run" },
+  ],
 };
 
 const usd = (x) => (x >= 100 ? `$${fmt(Math.round(x))}` : `$${x.toFixed(2)}`);
@@ -24,8 +38,8 @@ const steps = (D) => [
     note: `Press <b>Play</b>. The monthly average reads three columns of 1.8 billion rows, <b>${D.monthly} GB</b>. On demand, every TiB read costs $${PRICE}: this run costs <b>${usd(dollars(D.monthly))}</b>.` },
   { stop: "Every viewer", title: "A dashboard runs it for every viewer", decisive: true,
     note: `${D.viewers} people open the tile ${D.opens} times a day: ${D.viewers * D.opens} runs a day, <b>${usd(dollars(D.monthly) * D.viewers * D.opens * D.days)}</b> a month for one tile. Whoever writes the query sets that number.` },
-  { stop: "LIMIT", title: "Bytes read, not rows returned",
-    note: `Ten rows come back, and the whole column, <b>${D.limitGb} GB</b>, is read and billed to find them.` },
+  { stop: "LIMIT", title: "LIMIT trims the rows, not the price you can know",
+    note: `Ten rows come back from each. On the table that is not clustered the engine stops early, yet bills the whole column: <b>13.1 GB</b>, ${usd(dollars(D.limit[0].billed))}. On the clustered table the bill fell to <b>5.7 GB</b>, but its dry run gives only an upper bound, 13.1 GB: how much LIMIT saves is known only after the run.` },
   { stop: "Capacity", title: "The other meter: slots reserved",
     note: `With capacity billing you rent slots by the hour and bytes are not billed. The bill then follows the work, and a query that sorts can be cheap in bytes and dear in slots.` },
 ];
@@ -45,9 +59,8 @@ const CSS = extra("cmt") + `
 .lw .cmt text.x { font:600 15px ui-monospace, Menlo, monospace; fill:var(--mute); }
 .lw .cmt .run { fill:var(--hot); opacity:0; transition:opacity .35s; }
 .lw .cmt .st.on .run { opacity:.9; }
-.lw .cmt .seg { fill:var(--hot); opacity:.85; }
-.lw .cmt .seg.first { fill:var(--accent); opacity:1; }
-`;
+.lw .cmt .work { fill:var(--accent); } .lw .cmt .paid { fill:var(--hot); } .lw .cmt .rule { stroke:var(--line); stroke-width:1; }
+` + sqlCss("cmt");
 
 // ── step 0: three columns read, then the bytes become dollars ──────────────────────────────────
 const TX = 236, TW = 400, MAX = 18.6;
@@ -82,17 +95,18 @@ const audience = (D) => { const day = D.viewers * D.opens, d1 = dollars(D.monthl
     + t(510, 198, `× ${D.days}`, "x") + tile(540, "A MONTH", usd(d1 * day * D.days), `${fmt(day * D.days)} runs`, "hot")
     + pill(30, 272, 700, 44, "the cost is fixed when the query is written, not when the bill arrives", "warm", "hot")); };
 
-// ── step 2: LIMIT — the whole column is read, ten values come back ───────────────────────────
-const SEG = 48, SX = 30, SW = 700;
-const strip = () => Array.from({ length: SEG }, (_, i) =>
-  `<rect class="seg${i ? "" : " first"}" x="${SX + (i * SW) / SEG}" y="82" width="${SW / SEG - 2.5}" height="34" rx="3"/>`).join("");
-const limit = (D) => on("2", zone(14, 10, 732, 330, "SELECT num_bikes_available … LIMIT 10")
-  + t(30, 62, "num_bikes_available, all 1.8 billion values: read and billed", "l") + t(730, 62, `${D.limitGb} GB`, "big r hot")
-  + strip() + `<path class="edge on" d="M${SX + 6} 120 L${SX + 6} 156 L${SX + 40} 156"/>`
-  + pill(SX + 44, 140, 160, 32, "10 rows returned", "hit", "acc")
-  + `<rect class="tile hot" x="30" y="200" width="700" height="108" rx="14"/>`
-  + t(52, 224, "BILLED FOR TEN VALUES", "cap") + t(52, 270, usd(dollars(D.limitGb)), "odo l hot")
-  + t(200, 264, "the scan comes first; the limit only trims what it produced", "lbl l"));
+// ── step 2: LIMIT 10 on two tables — the query, its dry run, its bill, the work the plan did ──────
+const gb1 = (x) => `${x.toFixed(1)} GB`;
+const gauge = (y, label, f, cls) => t(30, y + 6, label, "lbl l") + `<rect class="track" x="120" y="${y}" width="610" height="12" rx="6"/>`
+  + `<rect class="${cls}" x="120" y="${y}" width="${(610 * f).toFixed(1)}" height="12" rx="6"/>`;
+const limitRow = (q, y) => t(30, y + 14, q.cap, "cap")
+  + sql(30, y + 38, `SELECT num_bikes_available\nFROM \`enjoytech-bq-lab.gbfs.${q.table}\`\nLIMIT 10;`)
+  + t(500, y + 32, "DRY RUN", "cap") + t(500, y + 56, q.dry, "big l") + t(500, y + 76, q.sure, "lbl l")
+  + t(626, y + 32, "BILLED", "cap") + t(626, y + 56, gb1(q.billed), "big l hot") + t(626, y + 76, usd(dollars(q.billed)), "lbl l")
+  + gauge(y + 92, "work done", q.done / q.units, "work") + gauge(y + 110, "billed", q.billed / 13.078888448, "paid")
+  + t(30, y + 134, `stopped after ${fmt(q.done)} of ${fmt(q.units)} work units ${q.how}`, "lbl l");
+const limit = (D) => on("2", zone(14, 10, 732, 330, "LIMIT 10 — TEN ROWS COME BACK; WHAT IS BILLED?")
+  + limitRow(D.limit[0], 38) + `<path class="rule" d="M30 182 L730 182"/>` + limitRow(D.limit[1], 184));
 
 // ── step 3: the two meters, the same two queries ───────────────────────────────────────────────
 const GBX = 3.6, SLX = 0.42;

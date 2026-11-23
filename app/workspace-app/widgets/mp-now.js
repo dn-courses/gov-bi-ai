@@ -1,10 +1,13 @@
 // mp-now — then and now: MapReduce's disk between every step; today's exchange in memory, with
 // many stages; plans that change while they run (a join switched to broadcast, as mp-join shows it).
 // A concept strip with no measured numbers of its own; the 29–30 stages are the exact median's
-// plan from _measurements.md. Sources (read from the papers): Dean & Ghemawat 2004; Snowflake
+// plan from _measurements.md, and step 1 draws that query's SQL (the instructor's run on the page MPP). Sources (read from the papers): Dean & Ghemawat 2004; Snowflake
 // 2016; Dremel 2020; Spark's adaptive query execution.
 // The timelines are pictures of order (what waits for what), not measured durations.
 import { LOOK, arrow, on, t, widget, zone } from "./mp-lib.js";
+import { sql, sqlCss } from "./cost-lib.js";
+
+const MEDIAN = "SELECT DISTINCT system_id,\n       PERCENTILE_CONT(num_bikes_available, 0.5)\n         OVER (PARTITION BY system_id) AS median_bikes\nFROM `enjoytech-bq-lab.gbfs.station_status`\nORDER BY system_id;";
 
 const CAPTURED = { medianStages: "29–30" };
 
@@ -17,7 +20,7 @@ const steps = (D) => [
     note: `After a stage the engine knows the real sizes and rewrites the rest of the plan: a shuffle join whose side turned out small becomes a broadcast join, a key that turned out huge is split over several workers. Spark calls this adaptive query execution; Dremel, BigQuery's engine, switches a join to broadcast mid-query.` },
 ];
 
-const CSS = LOOK("nw") + `
+const CSS = LOOK("nw") + sqlCss("nw") + `
 .lw .nw .stp { fill:var(--accent-bg); stroke:var(--accent); stroke-width:1.5; }
 .lw .nw .stp.off { fill:var(--cell); stroke:var(--line); }
 .lw .nw .stp.hotp { fill:var(--hot-bg); stroke:var(--hot); }
@@ -56,8 +59,8 @@ const stage = (j) => { const x = 120 + j * 96, y = 46 + j * 32;
 const memory = (D) => on("1", zone(11, 10, 738, 196, "TODAY: STAGES PIPELINED THROUGH MEMORY, IN TIME →")
   + [0, 1, 2, 3].map(stage).join("") + t(380, 188, "the next stage starts while the last is still sending", "lbl")
   + zone(11, 218, 738, 172, "SO A PLAN CAN HAVE MANY STAGES")
-  + Array.from({ length: 30 }, (_, i) => `<rect class="tick" style="--d:${200 + i * 35}ms" x="${27 + i * 23.6}" y="256" width="18" height="40" rx="6"/>`).join("")
-  + t(380, 326, `the exact median's plan: ${D.medianStages} stages`, "h") + t(380, 356, "with a disk between each, it would be 30 jobs", "lbl"));
+  + Array.from({ length: 30 }, (_, i) => `<rect class="tick" style="--d:${200 + i * 35}ms" x="${27 + i * 23.6}" y="246" width="18" height="28" rx="6"/>`).join("")
+  + sql(27, 300, MEDIAN) + t(733, 318, `${D.medianStages} stages`, "h r") + t(733, 342, "with a disk between each,", "lbl r") + t(733, 362, "it would be 30 jobs", "lbl r"));
 
 // Step 2: one plan, before and after the engine sees the real sizes.
 const adapt = () => on("2", zone(11, 10, 738, 180, "PLANNED BEFORE THE RUN")

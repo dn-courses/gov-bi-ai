@@ -2,8 +2,10 @@
 // draws its own layout. Too coarse reads a month for a day; too fine turns ten days into ten thousand
 // small files, each paying for its own footer.
 // Numbers: the page's own cells, run on 2026-11-23 through the lab (DuckDB 2.0.0, EXPLAIN ANALYZE and
-// parquet_file_metadata). By month: 3 files, 131.6 MB; one day 1 / 3 files, 75 / 76 row groups,
-// 22.1 MB (all re-run on page 01's station-sorted 346 MB file). By day: 1 / 90 files, 3 / 3 row groups, 214.3 kB. Ten days by (day, station_id): 10,000
+// parquet_file_metadata). By month: 3 files, about 132 MB (du -sb, the step's cell: 132,652,041 B
+// on 2026-11-23; the partitioned write is not byte-identical from run to run, 132.1-132.7 MB); one day 1 / 3 files; row groups scanned
+// 75 / 76, 76 / 76, 74 / 74 and 74 / 76 in four writes (the parallel write cuts row groups differently each
+// time, so whether one is skipped is chance: the widget says "every one"), Data Read 22.0-22.2 MB (all re-run on page 01's station-sorted 346 MB file). By day: 1 / 90 files, 3 / 3 row groups, 214.3 kB (the step's own cell, re-run 2026-11-23). Ten days by (day, station_id): 10,000
 // files, 76.0 MB, against 10 files, 5.0 MB by day; one station-day file 7,545 bytes with a 2,265-byte
 // footer, against 498,386 bytes for a whole day's 1,000 stations (≈ 0.5 kB a station); one day on
 // it 1,000 / 10,000 files, 7.9 MB.
@@ -11,7 +13,7 @@ import { box, extra, fmt, on, t, widget, zone } from "./col-lib.js";
 import { AUG1, calendar, meter, ptCss, stat } from "./pt-lib.js";
 
 const CAPTURED = {
-  month: { files: 3, mb: 131.6, groups: 76, read: 75, dayMb: 22.1 },
+  month: { files: 3, mb: "about 132", groups: 75, dayMb: "about 22" },
   day: { files: 90, dayKb: 214.3 },
   fine: { files: 10000, mb: 76.0, dayFiles: 1000, dayMb: 7.9, fileKb: 7.5, footerKb: 2.3, plainKb: 0.5 },
   ten: { files: 10, mb: 5.0 },
@@ -19,7 +21,7 @@ const CAPTURED = {
 
 const steps = (D) => [
   { stop: "By month", title: "Too coarse: a day costs a month",
-    note: `Three parts. A filter on one day still prunes to <b>1 of ${D.month.files}</b>, but that part is a whole month, and the day is spread through it: ${D.month.read} of ${D.month.groups} row groups, ${D.month.dayMb} MB.` },
+    note: `Three parts. A filter on one day still prunes to <b>1 of ${D.month.files}</b>, but that part is a whole month, and the day is spread through it, so the plan scans every row group, or all but one or two, ${D.month.dayMb} MB. How many there are changes from write to write: about ${D.month.groups}.` },
   { stop: "By day", title: "Cut at the period the questions name",
     note: `The questions name days, so one part per day: a day's question opens one file and reads all of it, ${D.day.dayKb} kB, and nothing else.` },
   { stop: "Too fine", title: "Too fine: by day and by station", decisive: true,
@@ -38,10 +40,10 @@ const oneDay = (files, groups, read, tone) => zone(14, 264, 732, 98, "ONE DAY, 2
 const MONTHS = ["month=2026-07-01/", "month=2026-08-01/", "month=2026-09-01/"];
 const byMonth = (D) => on("0", zone(14, 10, 732, 112, `partitioning_by_month/ — ${D.month.files} FOLDERS, ONE FILE IN EACH — ${D.month.mb} MB`)
   + MONTHS.map((m, i) => box(30 + i * 240, 44, 220, 58, m, i === 1 ? "hit" : "off", `mono ${i === 1 ? "acc" : "dim"}`)).join("")
-  + zone(14, 134, 732, 118, `INSIDE month=2026-08-01/ — ${D.month.groups} ROW GROUPS, SORTED BY STATION`)
-  + Array.from({ length: D.month.groups }, (_, i) => `<rect class="box ${i < D.month.read ? "warm" : ""}" x="${30 + i * 9.1}" y="168" width="7" height="32" rx="2"/>`).join("")
+  + zone(14, 134, 732, 118, `INSIDE month=2026-08-01/ — ABOUT ${D.month.groups} ROW GROUPS, SORTED BY STATION`)
+  + Array.from({ length: D.month.groups }, (_, i) => `<rect class="box warm" x="${30 + i * 9.1}" y="168" width="7" height="32" rx="2"/>`).join("")
   + t(30, 230, "Every station's rows of the month include the day asked for: almost every row group may hold it.", "lbl l")
-  + oneDay(`1 of ${D.month.files}`, `${D.month.read} of ${D.month.groups}`, `${D.month.dayMb} MB`, "hot"));
+  + oneDay(`1 of ${D.month.files}`, "every one", `${D.month.dayMb} MB`, "hot"));
 
 const byDay = (D) => on("1", zone(14, 10, 732, 242, `partitioning_by_day/ — ${D.day.files} FOLDERS, ONE FILE IN EACH`)
   + calendar({ y: 52, h: 28, cls: (i) => (i === AUG1 ? "d" : "x") })

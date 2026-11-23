@@ -101,6 +101,15 @@ FROM station_status
 WHERE ctid >= '(600000,0)' AND ctid < '(600001,0)';
 ```
 
+How many rows the page holds, and how many bytes a row takes:
+
+```sql needs=build-table
+SELECT count(*) AS rows_on_the_page,
+       avg(pg_column_size(s.*))::int AS bytes_per_row
+FROM station_status s
+WHERE ctid >= '(600000,0)' AND ctid < '(600001,0)';
+```
+
 </Step>
 <Step>
 
@@ -132,6 +141,14 @@ SELECT count(*) FROM station_status
 WHERE ctid >= '(600000,0)' AND ctid < '(600100,0)';
 ```
 
+How many pages PostgreSQL's memory for table data holds:
+
+```sql
+SELECT setting AS pages, unit
+FROM pg_settings
+WHERE name = 'shared_buffers';
+```
+
 </Step>
 <Step>
 
@@ -153,6 +170,15 @@ Once the data is in memory, the CPU does the work. There is more than one way fo
 <Step>
 </Step>
 <Step>
+
+The values in the drawing: `bikes_available` of the first sixteen rows of page 600000.
+
+```sql needs=build-table
+SELECT ctid, bikes_available
+FROM station_status
+WHERE ctid >= '(600000,1)' AND ctid <= '(600000,16)';
+```
+
 </Step>
 <Step>
 

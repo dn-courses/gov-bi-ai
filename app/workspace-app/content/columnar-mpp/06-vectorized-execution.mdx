@@ -43,6 +43,12 @@ def average(rows):
     return total / count
 ```
 
+The eight values the scene follows:
+
+```python
+print("bikes[182:190] =", bikes[182:190].tolist())
+```
+
 </Step>
 <Step>
 
@@ -51,6 +57,13 @@ started = time.perf_counter()
 answer = average(keep_positive(scan(bikes)))
 row_s = time.perf_counter() - started
 print(f"one row per call:   avg = {answer:.4f}   {row_s:5.2f} s")
+```
+
+How many values the filter hands on to the average:
+
+```python
+kept = sum(1 for _ in keep_positive(scan(bikes)))
+print(f"{kept:,} of {len(bikes):,} values are > 0")
 ```
 
 </Step>
@@ -147,6 +160,13 @@ import duckdb
 
 size = duckdb.__standard_vector_size__
 print(f"DuckDB {duckdb.__version__}: {size:,} values per vector, {-(-len(column) // size):,} vectors for this column")
+```
+
+Beside it, the two Python runs timed above:
+
+```python
+print(f"Python, one row per call: {row_s:.2f} s")
+print(f"Python, 2,048 per call:   {batch_s:.2f} s")
 ```
 
 </Step>

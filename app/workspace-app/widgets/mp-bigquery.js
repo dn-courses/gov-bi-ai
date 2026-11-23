@@ -7,7 +7,10 @@
 //    written; S02 1 input). The page quotes it as about 2 s and 2,281 slot-seconds.
 //  - the week (this page's participant cell, run 2026-11-23): 2.6 GB, 1.5 s, 26 slot-seconds; S00 144
 //    inputs, 100,478,334 read, 221 written, 7.6 kB; S01 14 inputs, 84 written.
-//  - per-minute average, exact median, rows per system: _measurements.md, "Lesson 06's four queries".
+//  - per-minute average, exact median: _measurements.md, "Lesson 06's four queries".
+//  - polls per system: this page's skew cell (COUNT(*) per system, the week of 2026-09-01 on
+//    gbfs.station_status_partitioned), run 2026-11-23: 1.8 GB, 12 systems, 100,478,334 rows,
+//    lyft_nyc 25,275,523 (25 %, as in the whole table: 453,051,661 of 1,803,699,574).
 //  - dry run of the monthly average: 46.1 GB, run 2026-11-23.
 // The pool's pattern of slots (yours, other queries', free) is a picture, not a measurement.
 import { LOOK, fmt, on, t, widget, zone } from "./mp-lib.js";
@@ -17,8 +20,8 @@ const CAPTURED = {
   month: { rows: 1803699574, inputs: 3060, written: 189720, groups: 62, shuffled: "7.1 MB", aggInputs: 306, slotS: 2281, elapsedS: 2.0 },
   week: { inputs: 144, rows: 100478334, written: 221, shuffled: "7.6 kB", groups: 84, slotS: 26 },
   minute: { written: 1454235574, shuffled: "53.5 GB", stages: 7, elapsed: "1.9–2.2 s" },
-  systems: [["lyft_nyc", 453051661], ["lyft_chi", 372303004], ["Bixi_MTL", 200528098], ["cabi", 156264450],
-    ["MEX", 122300476], ["lyft_bay", 115795459], ["bluebikes", 111830297], ["bike_barcelona", 97912497]],
+  systems: [["lyft_nyc", 25275523], ["lyft_chi", 20680947], ["Bixi_MTL", 11211021], ["cabi", 8729280],
+    ["MEX", 6824160], ["lyft_bay", 6398050], ["bluebikes", 6225799], ["bike_barcelona", 5482225]],
   median: { avg: "9–10 s", max: "33–40 s", elapsed: "46–65 s", stages: "29–30" },
 };
 
@@ -32,7 +35,7 @@ const steps = (D) => [
   { stop: "By minute", title: "Grouped by minute, the partial rows are nearly the rows", decisive: true,
     note: `Two million groups: a piece holds few rows of each, so reducing first saves little. S00 writes ${fmt(D.minute.written)} rows and sends <b>${D.minute.shuffled}</b>, where by month it sent ${D.month.shuffled}. The service has the network to absorb it: still ${D.minute.elapsed}.` },
   { stop: "Skew", title: "The exact median: the slowest worker holds a big system", decisive: true,
-    note: `lyft_nyc has a quarter of all rows, and an exact median sorts each system's values on one worker. In the sorting stage the average worker computed for ${D.median.avg}, the slowest for <b>${D.median.max}</b>. The query took ${D.median.elapsed}.` },
+    note: `In your week lyft_nyc has a quarter of the polls, as in the whole table, and an exact median sorts each system's values on one worker. In the sorting stage the average worker computed for ${D.median.avg}, the slowest for <b>${D.median.max}</b>. The query took ${D.median.elapsed}.` },
 ];
 
 const CSS = LOOK("bq") + `
@@ -110,7 +113,7 @@ const byMinute = (D) => {
 const sysRow = ([name, n], i, max) => { const y = 46 + i * 20, w = (380 * n) / max, hot = i === 0;
   return t(27, y + 8, name, `v l ${hot ? "hot" : ""}`) + `<rect class="bar in ${hot ? "warm" : "dim2"}" x="170" y="${y}" width="${w}" height="15" rx="3"/>`
     + t(180 + w, y + 8, fmt(n), `v l ${hot ? "hot" : "dim"}`); };
-const skew = (D) => on("4", zone(11, 10, 738, 208, "ROWS PER SYSTEM — THE EIGHT LARGEST OF 14")
+const skew = (D) => on("4", zone(11, 10, 738, 208, "POLLS PER SYSTEM, THE WEEK OF 1 SEPTEMBER — EIGHT LARGEST OF 12")
   + D.systems.map((s, i) => sysRow(s, i, D.systems[0][1])).join("")
   + zone(11, 228, 738, 164, "THE MEDIAN'S SORTING STAGE — ONE WORKER'S COMPUTE TIME")
   + t(27, 272, "the average worker", "l") + `<rect class="bar on in" x="200" y="261" width="${(380 * 10) / 40}" height="22" rx="4"/>` + t(305, 272, D.median.avg, "big l acc")

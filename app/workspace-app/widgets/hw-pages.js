@@ -4,12 +4,12 @@
 import { arrow, extra, fmt, on, t, widget, zone } from "./col-lib.js";
 
 // Measured 2026-11-23 from this page's cells, in the lesson app on the postgres lab, in this order:
-// block_size 8192; station_status 777,595 pages, 25,920,000 rows; page 600000 holds 32 rows of 244
-// bytes ((600000,1) station 772, DC, 2026-09-05 15:15, 11 bikes). Tid Scan of (600000,1): shared
+// block_size 8192; station_status 777,600 pages (pg_relation_size / 8192, and the Seq Scan's Buffers: shared hit + read; rows sit on pages 0–777,594, the last 5 pages are empty), 25,920,000 rows; page
+// 600000 holds 32 rows, avg(pg_column_size(s.*)) 244 bytes ((600000,1) station 772, DC, 2026-09-05 15:15, 11 bikes). Tid Scan of (600000,1): shared
 // read=1. Pages 600000–600099: hit=1 read=99, 3,200 rows; again: hit=100. Pages 0–9,999: read=9,983
-// hit=17, 336,670 rows.
+// hit=17, 336,670 rows. shared_buffers: pg_settings 16384 pages of 8kB.
 const CAPTURED = {
-  block: 8192, pages: 777595, rows: 25920000, pageRows: 32, rowBytes: 244, first: "station 772, 15:15, 11 bikes",
+  block: 8192, pages: 777600, rows: 25920000, pageRows: 32, rowBytes: 244, first: "station 772, 15:15, 11 bikes",
   last: "station 772, 17:50, 7 bikes", range: [99, 1, 3200], again: [0, 100, 3200],
   big: [9983, 17, 336670], bigPages: 10000, bufferPages: 16384,
 };

@@ -5,6 +5,15 @@ machines, each scanning its own share at the same moment: **massively parallel p
 
 <Scene widget="mp-split">
 <Step>
+
+The real capture's size. A count of the whole table is answered from the table's metadata, so it
+reads 0 bytes:
+
+```bigquery
+SELECT COUNT(*) AS row_count
+FROM `enjoytech-bq-lab.gbfs.station_status`;
+```
+
 </Step>
 <Step>
 

@@ -2,7 +2,8 @@
 // a filter on the day answered from the list of partitions, no filter, and a function around the
 // column that hides the day from the list.
 // Numbers: the page's dry runs on 2026-11-23 (AVG(num_bikes_available)), equal to
-// day1-reference/_measurements.md (2026-11-21/22); MIN/MAX 14.4 GB and COUNT(*) 0 B are page 04's dry runs, quoted; flat one day 27.5 GB (page 04's dry run, quoted); partitioned one day
+// day1-reference/_measurements.md (2026-11-21/22); MIN/MAX 14.4 GB and COUNT(*) 0 B, dry runs of this Scene's cells on the partitioned table;
+// flat one day 27.5 GB, this Scene's dry-run cell on gbfs.station_status (all re-run 2026-11-23); partitioned one day
 // 218.7 MB; no filter 13.1 GB; EXTRACT(MONTH …) = 9 27.5 GB; September as a range 6.6 GB.
 import { DAYS, SEP1, dayTiles, extra, fmt, on, t, widget, zone } from "./col-lib.js";
 import { code, meter, ptCss, stat } from "./pt-lib.js";

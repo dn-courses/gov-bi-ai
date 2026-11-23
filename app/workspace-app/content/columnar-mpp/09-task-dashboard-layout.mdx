@@ -45,6 +45,32 @@ EXPLAIN ANALYZE SELECT * FROM ref_t1;
 <Step>
 </Step>
 <Step>
+
+The three tiles on BigQuery's flat table, priced and not run:
+
+```bigquery
+-- dry run
+SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(num_bikes_available) AS bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+WHERE system_id = 'lyft_nyc' AND captured_at >= '2026-10-15' AND captured_at < '2026-10-16'
+GROUP BY hour;
+```
+
+```bigquery
+-- dry run
+SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(num_bikes_available) AS bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+WHERE station_id = '00284700-9d22-42ce-8485-113fed9879c1'
+GROUP BY hour;
+```
+
+```bigquery
+-- dry run
+SELECT TIMESTAMP_TRUNC(captured_at, MONTH) AS month, system_id, AVG(num_bikes_available) AS bikes
+FROM `enjoytech-bq-lab.gbfs.station_status`
+GROUP BY month, system_id;
+```
+
 </Step>
 </Scene>
 
@@ -97,24 +123,8 @@ du -sb station_status.parquet dash* 2>/dev/null    # bytes
 ## Part B — the same tiles in the warehouse (15 minutes)
 
 On BigQuery, `gbfs.station_status_partitioned` holds the 1.8 billion rows partitioned by
-`DATE(captured_at)` and clustered by `system_id, station_id`. Here are T1 and T2 on the flat table,
-priced and not run:
-
-```bigquery
--- dry run
-SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(num_bikes_available) AS bikes
-FROM `enjoytech-bq-lab.gbfs.station_status`
-WHERE system_id = 'lyft_nyc' AND captured_at >= '2026-10-15' AND captured_at < '2026-10-16'
-GROUP BY hour;
-```
-
-```bigquery
--- dry run
-SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(num_bikes_available) AS bikes
-FROM `enjoytech-bq-lab.gbfs.station_status`
-WHERE station_id = '00284700-9d22-42ce-8485-113fed9879c1'
-GROUP BY hour;
-```
+`DATE(captured_at)` and clustered by `system_id, station_id`. The scene above prices T1, T2 and T3 on
+the flat table.
 
 Rewrite each for the partitioned table and dry-run it. Run for real only a query priced at a few
 hundred megabytes at most.
@@ -131,7 +141,7 @@ hundred megabytes at most.
 
 **Stretch: price the dashboard.** Give it the audience of the cost page: 4,400 opens of each tile a
 month, at $6.25 a TiB. What does each tile cost a month on the flat table, and on the partitioned
-one? Dry-run T3 on both tables: which tile would you serve from a small summary table, and why?
+one? Dry-run T3 on the partitioned table too: which tile would you serve from a small summary table, and why?
 
 ```bigquery id=bq-t3 manual
 -- dry run
