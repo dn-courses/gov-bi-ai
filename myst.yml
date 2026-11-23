@@ -52,7 +52,7 @@ project:
       - file: materials/data-in-the-cloud/columnar-mpp/06-vectorized-execution.md
       - file: materials/data-in-the-cloud/columnar-mpp/07-mpp.md
       - file: materials/data-in-the-cloud/columnar-mpp/08-cost-and-comparison.md
-      - file: materials/data-in-the-cloud/columnar-mpp/09-task-dashboard-layout.md
+      - file: materials/data-in-the-cloud/columnar-mpp/09-task-choose-the-store.md
   - title: AI Agent Development
     children:
     - file: materials/ai-agent-development/agents/README.md

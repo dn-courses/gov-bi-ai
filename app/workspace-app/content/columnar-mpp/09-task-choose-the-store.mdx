@@ -1,0 +1,463 @@
+export const meta = { title: "Hands-on: Choose the Store", minutes: 60, database: "shop", settings: {} };
+
+The same readings live in two stores. Eight workloads ask for them, each with its own query and its
+own number of runs a month. For each one you choose where the data lives and how it is laid out,
+build it, measure it, and write down three numbers. At the end you choose for all eight at once.
+
+You start from a table with no index at all. This removes the one earlier pages built; they create it
+again with `CREATE INDEX IF NOT EXISTS` when their cells are run again.
+
+```sql id=no-index
+DROP INDEX IF EXISTS station_status_station_time;
+```
+
+## The two stores
+
+<table>
+  <thead><tr><th></th><th>PostgreSQL (a row store)</th><th>BigQuery (a column store)</th></tr></thead>
+  <tbody>
+    <tr><td>the table</td><td><code>station_status</code>: 25,920,000 rows, 15 columns, 6,075 MB</td><td><code>enjoytech-bq-lab.gbfs.lab_station_status</code>: the same rows, 6.33 GB</td></tr>
+    <tr><td>at real volume</td><td>does not fit a laptop</td><td><code>enjoytech-bq-lab.gbfs.station_status_partitioned</code>: the real capture, 1,803,699,574 rows, 167 GB, partitioned by day, clustered by <code>system_id, station_id</code></td></tr>
+    <tr><td>what you may build</td><td>B-tree indexes</td><td>in your own dataset: a copy with <code>PARTITION BY</code>, <code>CLUSTER BY</code>, fewer columns, or a summary table</td></tr>
+    <tr><td>what it costs</td><td>a fixed server a month: Cloud SQL, 4 vCPU, 16 GiB of memory, 20 GiB of disk, <b>$205.76 a month</b> however many queries it runs; with the 500 GiB of disk the real capture needs, <b>$287.36 a month</b></td><td>each query: <b>$6.25 a TiB</b> billed, and at least 10 MB for every table a query reads</td></tr>
+  </tbody>
+</table>
+
+The columns of both tables: `station_id`, `system_id`, `captured_at`, `bikes_available`,
+`docks_available`, `ebikes_available`, `bikes_disabled`, `docks_disabled`, `is_renting`,
+`is_returning`, `is_installed`, `last_reported`, `name`, `vehicle_types`, `legacy_id`.
+
+## The tool
+
+Run this first. It measures any statement on either store and prints the same three lines.
+
+```python id=measure
+# The measuring tool: the same three numbers for any statement, on either store.
+#   measure_pg(sql)          PostgreSQL: runs it 3 times in a transaction that is rolled back
+#   measure_bq(sql)          BigQuery: runs it once for real, cache off; "{sandbox}" is your own dataset
+#   per_month(measured, n)   what n runs a month cost
+#   run_pg(sql)              PostgreSQL: runs a statement once and keeps it (CREATE INDEX, DROP INDEX)
+import json
+import os
+import statistics
+import time
+from pathlib import Path
+from typing import NamedTuple
+
+import psycopg
+from google.api_core.exceptions import GoogleAPICallError
+from google.cloud import bigquery
+
+MB = 2**20  # the unit PostgreSQL prints and BigQuery bills in
+PAGE_BYTES = 8192
+PRICE_PER_TIB = 6.25  # BigQuery on demand, US
+MAX_BYTES_BILLED = 5 * 10**9  # BigQuery refuses, free of charge, a statement that would bill more
+# PostgreSQL has no price per query: a managed server is rented by the month, whatever it runs.
+# Cloud SQL for PostgreSQL, Enterprise edition, Iowa (us-central1), one zone, on demand:
+# $0.0413 a vCPU-hour, $0.007 a GiB-hour of memory, SSD $0.000232877 a GiB-hour ($0.17 a GiB-month).
+# https://cloud.google.com/sql/pricing, read 2026-11-23.
+VCPUS, MEMORY_GIB, DISK_GIB, HOURS_A_MONTH = 4, 16, 20, 730
+SERVER_A_MONTH = (VCPUS * 0.0413 + MEMORY_GIB * 0.007 + DISK_GIB * 0.000232877) * HOURS_A_MONTH
+LAB = "enjoytech-bq-lab.gbfs.lab_station_status"  # the BigQuery copy of station_status
+
+KEY = json.loads(Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]).read_text())
+# student-p01@… owns sandbox_p01, student-agents-test@… owns sandbox_agents_test
+SANDBOX = "sandbox_" + KEY["client_email"].split("@")[0].removeprefix("student-").replace("-", "_")
+BQ = bigquery.Client.from_service_account_info(KEY)
+
+
+class Measured(NamedTuple):
+    store: str
+    mb: float  # data read
+    seconds: float  # time to answer
+    dollars: float  # the price of one run; 0 on PostgreSQL, where the server is paid by the month
+    note: str
+
+
+def show(measured):
+    seconds = measured.seconds
+    took = f"{seconds:,.2f} s" if seconds >= 1 else f"{seconds * 1000:,.3f} ms"
+    cost = f"${SERVER_A_MONTH:,.2f} a month for the server, however many runs"
+    if measured.store == "BigQuery":
+        cost = f"${measured.dollars:.6f} a run"
+    print(f"{measured.store}\n  data read  {measured.mb:,.2f} MB\n  time       {took}  ({measured.note})")
+    print(f"  cost       {cost}")
+    return measured
+
+
+def explain(cursor, sql):
+    """One run: its page visits (found in memory or read from disk) and its execution time."""
+    cursor.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql)
+    top = cursor.fetchone()[0][0]
+    return top["Plan"]["Shared Hit Blocks"] + top["Plan"]["Shared Read Blocks"], top["Execution Time"] / 1000
+
+
+def measure_pg(sql, hide=(), runs=3):
+    """Measure on PostgreSQL and change nothing. `hide` names indexes to measure without."""
+    with psycopg.connect() as conn, conn.cursor() as cursor:
+        for index in hide:
+            cursor.execute(f"DROP INDEX {index}")  # undone by the rollback; the table is locked meanwhile
+        took = [explain(cursor, sql) for _ in range(runs)]
+        conn.rollback()
+    pages = took[-1][0]
+    seconds = statistics.median(seconds for _, seconds in took)
+    note = f"median of {runs} runs; {pages:,} page visits of 8 kB, a page counted each time it is visited"
+    return show(Measured("PostgreSQL", pages * PAGE_BYTES / MB, seconds, 0.0, note))
+
+
+def measure_bq(sql):
+    """Run on BigQuery for real, once. A CREATE TABLE or an UPDATE is measured the same way."""
+    config = bigquery.QueryJobConfig(use_query_cache=False, maximum_bytes_billed=MAX_BYTES_BILLED)
+    job = BQ.query(sql.replace("{sandbox}", SANDBOX), job_config=config)
+    try:
+        job.result()
+    except GoogleAPICallError as refused:  # the reason in one line, without the library's traceback
+        raise RuntimeError(refused.message) from None
+    billed = job.total_bytes_billed or 0
+    seconds = (job.ended - job.started).total_seconds()
+    note = "one run; bytes billed, at least 10 MB for each table read"
+    return show(Measured("BigQuery", billed / MB, seconds, billed / 2**40 * PRICE_PER_TIB, note))
+
+
+def per_month(measured, runs):
+    """What `runs` runs a month cost: a price per run on BigQuery, a rented server on PostgreSQL."""
+    if measured.store == "BigQuery":
+        print(f"{runs:,} runs a month on BigQuery: ${runs * measured.dollars:,.2f}")
+        return
+    busy = runs * measured.seconds
+    print(f"{runs:,} runs a month on PostgreSQL: ${SERVER_A_MONTH:,.2f}, the server's rent whatever it runs;")
+    print(f"  together they take {busy:,.1f} s of the month's {HOURS_A_MONTH * 3600:,} s")
+
+
+def run_pg(sql):
+    """Run one statement on PostgreSQL and keep its effect; print how long it took."""
+    started = time.perf_counter()
+    with psycopg.connect(autocommit=True) as conn:
+        conn.execute(sql)
+    seconds = time.perf_counter() - started
+    print(f"PostgreSQL: done in {seconds:,.1f} s")
+    return seconds
+
+
+print(f"your BigQuery dataset: {SANDBOX}")
+```
+
+How to read it: one question on each store, and what a thousand runs of it a month would cost.
+
+```python id=demo
+COUNT_PG = "SELECT count(*) FROM station_status WHERE system_id = 'NYC'"
+COUNT_BQ = f"SELECT count(*) FROM `{LAB}` WHERE system_id = 'NYC'"
+per_month(measure_pg(COUNT_PG), 1_000)
+per_month(measure_bq(COUNT_BQ), 1_000)
+```
+
+- **data read.** On BigQuery, the bytes billed. On PostgreSQL, every page of 8 kB the query visits,
+  in memory or on disk: a page visited twice counts twice, so an index can report more than the
+  whole table.
+- **time.** On PostgreSQL the median of three runs; on BigQuery one run, which varies from run to run.
+- **cost.** On PostgreSQL the server's rent, the same for one run or a million, and how many seconds
+  of the month the runs keep it busy. On BigQuery the price of one run, and of all the runs a month.
+
+## What you can build: the syntax
+
+These are examples of the syntax, **not answers**: the columns are placeholders.
+
+A B-tree index on PostgreSQL. Start every name with `ho_`; the clean-up at the end removes those.
+`INCLUDE` adds columns that are stored in the index but not sorted by.
+
+```py
+# Example only: col_a, col_b, col_c are placeholders.
+run_pg("CREATE INDEX ho_example ON station_status (col_a, col_b)")
+run_pg("CREATE INDEX ho_example2 ON station_status (col_a, col_b) INCLUDE (col_c)")
+run_pg("DROP INDEX ho_example")          # an index you no longer want
+measure_pg(SQL, hide=["ho_example2"])    # measure as if that index did not exist
+```
+
+A copy on BigQuery, in your own dataset. `measure_bq` prints what building it billed and took.
+
+```py
+# Example only: col_a and the column list are placeholders.
+measure_bq("""
+CREATE OR REPLACE TABLE `enjoytech-bq-lab.{sandbox}.ho_example`
+PARTITION BY DATE(captured_at)
+CLUSTER BY col_a
+AS SELECT station_id, system_id, captured_at, bikes_available
+FROM `enjoytech-bq-lab.gbfs.lab_station_status`
+""")
+```
+
+- A copy must **name its columns**: `SELECT *` would bill the whole 6.33 GB, and the tool refuses
+  anything above 5 GB.
+- Partitions come by `HOUR`, `DAY` (`DATE(captured_at)`), `MONTH` or `YEAR`
+  (`TIMESTAMP_TRUNC(captured_at, MONTH)`), or by an integer range (`RANGE_BUCKET`). There are no
+  weekly partitions.
+- `CLUSTER BY` takes up to four columns. A summary table is a copy built with `GROUP BY`.
+- Start every table name with `ho_`.
+
+## The workloads
+
+For each workload: decide which store and which structure should serve it, build that structure,
+measure the query on both stores, and fill in its row of the results table further down. About 35
+minutes for W1 to W5, 10 for W6 to W8, and 15 for the final question.
+
+In the BigQuery strings, `{table}` is the table you measure on: `.format(table=LAB)` for the shared
+table as it is, `.format(table="enjoytech-bq-lab.{sandbox}.ho_yours")` for a copy of yours. Run a
+workload's first cell to load its queries, then write in the cells below it.
+
+### W1 · The latest status of one station · 100,000 runs a month
+
+The app's station page.
+
+```python id=w1
+W1 = """SELECT captured_at, bikes_available, docks_available FROM station_status
+WHERE station_id = 6 ORDER BY captured_at DESC LIMIT 1"""
+W1_BQ = """SELECT captured_at, bikes_available, docks_available FROM `{table}`
+WHERE station_id = 6 ORDER BY captured_at DESC LIMIT 1"""
+```
+
+```python id=w1-pg manual
+# PostgreSQL: your index (run_pg), then the measurement.
+# per_month(measure_pg(W1), 100_000)
+```
+
+```python id=w1-bq manual
+# BigQuery: the table as it is, then your copy (measure_bq of a CREATE TABLE), then the query on it.
+# per_month(measure_bq(W1_BQ.format(table=LAB)), 100_000)
+```
+
+### W2 · Fix one wrong reading · 100 runs a month
+
+An operator corrects a reading by hand. On PostgreSQL `measure_pg` rolls the change back. On
+BigQuery the shared table is read-only: the UPDATE runs on a copy of yours, and really changes it.
+
+```python id=w2
+W2 = """UPDATE station_status SET bikes_available = 7
+WHERE station_id = 6 AND captured_at = '2026-08-15 12:00:00+00'"""
+W2_BQ = """UPDATE `{table}` SET bikes_available = 7
+WHERE station_id = 6 AND captured_at = '2026-08-15 12:00:00+00'"""
+```
+
+```python id=w2-pg manual
+# per_month(measure_pg(W2), 100)
+```
+
+```python id=w2-bq manual
+# per_month(measure_bq(W2_BQ.format(table="enjoytech-bq-lab.{sandbox}.ho_yours")), 100)
+```
+
+### W3 · One system, hour by hour, one day · 4,400 runs a month
+
+A dashboard tile: 50 viewers open it 4 times a working day.
+
+```python id=w3
+W3 = """SELECT date_trunc('hour', captured_at) AS hour, avg(bikes_available) AS bikes FROM station_status
+WHERE system_id = 'NYC' AND captured_at >= '2026-08-15' AND captured_at < '2026-08-16'
+GROUP BY 1 ORDER BY 1"""
+W3_BQ = """SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(bikes_available) AS bikes FROM `{table}`
+WHERE system_id = 'NYC' AND captured_at >= '2026-08-15' AND captured_at < '2026-08-16'
+GROUP BY hour ORDER BY hour"""
+```
+
+```python id=w3-pg manual
+# per_month(measure_pg(W3), 4_400)
+```
+
+```python id=w3-bq manual
+# per_month(measure_bq(W3_BQ.format(table=LAB)), 4_400)
+```
+
+### W4 · One station, hour by hour, the whole period · 500 runs a month
+
+A report a planner opens for one station.
+
+```python id=w4
+W4 = """SELECT date_trunc('hour', captured_at) AS hour, avg(bikes_available) AS bikes FROM station_status
+WHERE station_id = 6 GROUP BY 1 ORDER BY 1"""
+W4_BQ = """SELECT TIMESTAMP_TRUNC(captured_at, HOUR) AS hour, AVG(bikes_available) AS bikes FROM `{table}`
+WHERE station_id = 6 GROUP BY hour ORDER BY hour"""
+```
+
+```python id=w4-pg manual
+# per_month(measure_pg(W4), 500)
+```
+
+```python id=w4-bq manual
+# per_month(measure_bq(W4_BQ.format(table=LAB)), 500)
+```
+
+Does the structure you built for W3 also serve W4? Measure W4 on it before you build another.
+
+### W5 · The monthly average of each system, over everything · 4,400 runs a month
+
+The headline tile of the same dashboard.
+
+```python id=w5
+W5 = """SELECT date_trunc('month', captured_at) AS month, system_id, avg(bikes_available) AS bikes
+FROM station_status GROUP BY 1, 2 ORDER BY 1, 2"""
+W5_BQ = """SELECT TIMESTAMP_TRUNC(captured_at, MONTH) AS month, system_id, AVG(bikes_available) AS bikes
+FROM `{table}` GROUP BY month, system_id ORDER BY month, system_id"""
+```
+
+```python id=w5-pg manual
+# per_month(measure_pg(W5), 4_400)
+```
+
+```python id=w5-bq manual
+# per_month(measure_bq(W5_BQ.format(table=LAB)), 4_400)
+```
+
+<details>
+<summary>A hint, if you want one</summary>
+
+This query filters nothing, so no index, partition or cluster has anything to skip. What could be
+added up once, in advance, so that each run reads less?
+
+</details>
+
+## At real volume: W6, W7, W8 on the capture
+
+These three run on the real capture, one week of it (2026-10-12 to 2026-10-18: 100,311,561 rows).
+The capture names the bike count `num_bikes_available`. On BigQuery, measure each query as it is
+given, on the partitioned table; then try it on `gbfs.station_status`, the same rows with no
+partitions, and read what the tool says.
+
+```python id=w6
+W6 = """SELECT system_id, AVG(num_bikes_available) AS bikes, COUNT(*) AS readings
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
+GROUP BY system_id ORDER BY system_id"""
+W7 = """SELECT system_id, EXTRACT(HOUR FROM captured_at) AS hour, AVG(num_bikes_available) AS bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19' AND num_bikes_available IS NOT NULL
+GROUP BY system_id, hour
+QUALIFY ROW_NUMBER() OVER (PARTITION BY system_id ORDER BY bikes) = 1 ORDER BY system_id"""
+W8 = """SELECT DATE(captured_at) AS day, system_id, COUNT(DISTINCT station_id) AS stations
+FROM `enjoytech-bq-lab.gbfs.station_status_partitioned`
+WHERE captured_at >= '2026-10-12' AND captured_at < '2026-10-19'
+GROUP BY day, system_id ORDER BY day, system_id"""
+```
+
+**W6 · The week's KPI per system · 4,400 runs a month**
+
+```python id=w6-bq manual
+# per_month(measure_bq(W6), 4_400)
+```
+
+**W7 · Each system's emptiest hour of the day over the week · 500 runs a month**
+
+```python id=w7-bq manual
+# per_month(measure_bq(W7), 500)
+```
+
+**W8 · Stations reporting, per system per day · 500 runs a month**
+
+```python id=w8-bq manual
+# per_month(measure_bq(W8), 500)
+```
+
+**PostgreSQL at this volume is arithmetic, not a measurement.** The capture does not fit a laptop,
+so these figures are computed, and every line says from what:
+
+<table>
+  <thead><tr><th>step</th><th>arithmetic</th><th>result</th></tr></thead>
+  <tbody>
+    <tr><td>the table</td><td>1,803,699,574 rows ÷ 25,920,000 = 69.6 times the lab table; 6,075 MB × 69.6</td><td>about 413 GiB</td></tr>
+    <tr><td>one week</td><td>100,311,561 rows = 3.87 lab tables</td><td>about 23 GiB</td></tr>
+    <tr><td>the server</td><td>413 GiB fits neither 20 GiB of disk nor 16 GiB of memory; with 500 GiB of disk: $202.36 for 4 vCPU and 16 GiB, + 500 × $0.17 (cloud.google.com/sql/pricing, read 2026-11-23)</td><td>$287.36 a month</td></tr>
+    <tr><td>the disk's speed</td><td>an SSD disk gives 0.48 MiB/s per GiB, at most 240 MiB/s for 2–7 vCPUs (cloud.google.com/compute/docs/disks/performance, read 2026-11-24): 500 × 0.48</td><td>240 MiB/s</td></tr>
+    <tr><td>time for one week</td><td>23,511 MiB ÷ 240 MiB/s, at best: an index on <code>captured_at</code> and the week's rows stored together</td><td>about 98 s; W8 adds a sort on top</td></tr>
+    <tr><td>time for the whole capture</td><td>422,742 MiB ÷ 240 MiB/s</td><td>about 29 minutes</td></tr>
+  </tbody>
+</table>
+
+The scan rate itself was measured on the lab table: these three query shapes read the full 6,075 MB
+in 1.0–1.3 s (W6), 1.4 s (W7) and 4.5 s (W8), with the table in memory. At this volume it is not.
+
+## Your results
+
+Copy this into your notes and fill it in as you go: one row per workload and store, and the
+structure you chose.
+
+```md
+| workload | runs a month | store | structure (index or table) | data read | time | cost a run | cost a month | build: time | build: billed, $ |
+|---|---|---|---|---|---|---|---|---|---|
+| W1 | 100,000 | PostgreSQL | | | | — | $205.76 (rent) | | — |
+| W1 | 100,000 | BigQuery | | | | | | | |
+| W2 | 100 | PostgreSQL | | | | — | $205.76 (rent) | | — |
+| W2 | 100 | BigQuery | | | | | | | |
+| W3 | 4,400 | PostgreSQL | | | | — | $205.76 (rent) | | — |
+| W3 | 4,400 | BigQuery | | | | | | | |
+| W4 | 500 | PostgreSQL | | | | — | $205.76 (rent) | | — |
+| W4 | 500 | BigQuery | | | | | | | |
+| W5 | 4,400 | PostgreSQL | | | | — | $205.76 (rent) | | — |
+| W5 | 4,400 | BigQuery | | | | | | | |
+| W6 | 4,400 | PostgreSQL | (arithmetic) | about 23 GiB | about 98 s | — | $287.36 (rent) | — | — |
+| W6 | 4,400 | BigQuery | | | | | | — | — |
+| W7 | 500 | PostgreSQL | (arithmetic) | about 23 GiB | about 98 s | — | $287.36 (rent) | — | — |
+| W7 | 500 | BigQuery | | | | | | — | — |
+| W8 | 500 | PostgreSQL | (arithmetic) | about 23 GiB | 98 s and a sort | — | $287.36 (rent) | — | — |
+| W8 | 500 | BigQuery | | | | | | — | — |
+```
+
+## The question
+
+All eight workloads run every month, together. Which store would you run them on: one of the two,
+or a split, and which workloads go where? Write down what it costs a month in all, and the slowest
+answer each choice gives. Then say which one number decided each workload.
+
+<details>
+<summary>For the instructor: the discussion</summary>
+
+Ask two or three tables for their split and their monthly total, then go through the answer key's
+best measurements (`hands-on-stores.md`, measured 2026-11-23 with this tool):
+
+<table>
+  <thead><tr><th>workload</th><th>PostgreSQL, best B-tree</th><th>BigQuery, best layout</th><th>best</th></tr></thead>
+  <tbody>
+    <tr><td>W1</td><td><code>(station_id, captured_at)</code>: 0.04 MB (5 pages), 0.008 ms</td><td>clustered by <code>station_id, captured_at</code>: 12 MB, 0.46 s, $7.15 a month</td><td>PostgreSQL</td></tr>
+    <tr><td>W2</td><td>the same index: 0.06 MB (8 pages), 0.007 ms</td><td>partitioned by day: 11 MB, 1.7–4.8 s</td><td>PostgreSQL</td></tr>
+    <tr><td>W3</td><td><code>(captured_at, system_id)</code>: 14.9 MB, 5.4 ms</td><td>partitioned by day: 10 MB, 0.17 s, $0.26 a month</td><td>BigQuery by price, PostgreSQL by speed</td></tr>
+    <tr><td>W4</td><td><code>(station_id, captured_at DESC) INCLUDE (bikes_available, docks_available)</code>: 1.05 MB, 3.3 ms</td><td>clustered by <code>station_id, captured_at</code>, no partitions: 10 MB, 0.22 s, $0.03 a month</td><td>either</td></tr>
+    <tr><td>W5</td><td>no index helps: 6,075 MB, 1.31 s</td><td>as it is: 507 MB, 0.3–0.5 s, $13.30 a month; a summary by hour: 10 MB, $0.26 a month</td><td>BigQuery</td></tr>
+    <tr><td>W6</td><td>arithmetic: about 98 s</td><td>2,445 MB, 1.96 s, $64.12 a month</td><td>BigQuery</td></tr>
+    <tr><td>W7</td><td>arithmetic: about 98 s</td><td>2,445 MB, 0.8–1.0 s, $7.29 a month</td><td>BigQuery</td></tr>
+    <tr><td>W8</td><td>arithmetic: 98 s and a sort</td><td>4,018 MB, 0.83 s, $11.97 a month</td><td>BigQuery</td></tr>
+  </tbody>
+</table>
+
+Points for the room:
+
+- **The 10 MB floor.** Every good BigQuery layout lands on 10 MB a run; for W1's 100,000 runs that is
+  still $5.96–7.15 a month, for a question PostgreSQL answers from 5 pages, 25,000 times faster.
+- **One layout does not serve all.** Day partitions are right for W3 and wrong for W1 and W4: a day
+  is about 10 MB, so clustering inside it has nothing left to skip. Two copies at $0.0054 each beat a
+  compromise.
+- **No index helps W5**, and a covering index makes it slower: its page visits add up to more than
+  the table (31 GB of visits through a 1 GB index). Only adding up in advance goes under 507 MB.
+- **Fewer columns in a copy change nothing for a query**: BigQuery reads only the columns asked for
+  anyway. They make the copy cheaper to build (903 MB billed instead of a refused 6.33 GB).
+- **An UPDATE on BigQuery takes seconds**, even when it bills 10 MB.
+- **At real volume the server cannot keep up**: 4,400 W6 weeks a month × 98 s is 120 hours of one
+  disk, and the whole-capture form is 29 minutes a run. On BigQuery, the same 4,400 runs over the
+  whole capture would cost $1,153 a month: a summary table brings that back to cents.
+- **All eight on BigQuery**: about $103 a month, every answer in about 2 s at most (W2 up to 5 s).
+  The split the key arrives at: W1 and W2 on PostgreSQL, W5 to W8 on BigQuery, W3 and W4 on either.
+
+</details>
+
+## Clean up
+
+Remove your indexes and your tables: everything whose name starts with `ho_`.
+
+```python id=clean-up
+with psycopg.connect(autocommit=True) as conn:
+    mine = conn.execute(
+        "SELECT indexname FROM pg_indexes WHERE tablename = 'station_status' AND indexname LIKE 'ho\\_%'"
+    ).fetchall()
+    for (index,) in mine:
+        conn.execute(f"DROP INDEX {index}")
+tables = [t.table_id for t in BQ.list_tables(f"enjoytech-bq-lab.{SANDBOX}") if t.table_id.startswith("ho_")]
+for table in tables:
+    BQ.delete_table(f"enjoytech-bq-lab.{SANDBOX}.{table}")
+print(f"dropped {len(mine)} index(es) and {len(tables)} table(s)")
+```

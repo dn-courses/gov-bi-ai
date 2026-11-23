@@ -59,7 +59,7 @@
     "columnar-mpp/06-vectorized-execution": "postgres",
     "columnar-mpp/07-mpp": "postgres",
     "columnar-mpp/08-cost-and-comparison": "postgres",
-    "columnar-mpp/09-task-dashboard-layout": "postgres",
+    "columnar-mpp/09-task-choose-the-store": "postgres",
     "agents/00-what-is-an-llm": "agents",
     "agents/01-llm-as-api": "agents",
     "agents/02-from-completion-to-agent": "agents",
