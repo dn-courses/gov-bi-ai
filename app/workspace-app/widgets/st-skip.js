@@ -5,8 +5,8 @@
 // station_status.parquet (station order) and statistics_and_skipping.parquet (the same rows,
 // ORDER BY captured_at, station_id, PARQUET_VERSION v2; 211 row groups):
 //   footer check, 1 Aug      station order 211 / 211 may hold it; time order 3 / 211 (groups 72-74)
-//   EXPLAIN ANALYZE, 1 Aug   station order 211 / 211, 174.4 MB, 40-140 ms (three runs, re-measured 15:30);
-//                            time order 3 / 211, 744.5 kB, 8-10 ms (three runs)
+//   EXPLAIN ANALYZE, 1 Aug   station order 211 / 211, 174.4 MB, 24-31 ms (three runs, re-measured 15:45 on the 346,091,490-byte file);
+//                            time order 3 / 211, 744.5 kB, 3 ms (three runs)
 //   station_id = 42          station order 1 / 211, 782.3 kB; time order 211 / 211, 22.0 MB
 //   column chunks on disk    legacy_id 0.1 -> 10.0 MB, name 0.1 -> 4.4, station_id 0.0 -> 4.0,
 //                            system_id 0.0 -> 0.5 (station order -> time order)
@@ -16,7 +16,7 @@ import { CSS, on, t, widget, zone } from "./ramp-lib.js";
 
 const CAPTURED = {
   groups: 211, hits: 3,
-  day: { station: ["211 / 211", "174.4 MB", "40–140 ms"], time: ["3 / 211", "744.5 kB", "8–10 ms"] },
+  day: { station: ["211 / 211", "174.4 MB", "25–30 ms"], time: ["3 / 211", "744.5 kB", "3 ms"] },
   st42: { station: ["1 / 211", "782.3 kB"], time: ["211 / 211", "22.0 MB"] },
   sizes: [["legacy_id", 0.1, 10.0], ["name", 0.1, 4.4], ["station_id", 0.0, 4.0], ["system_id", 0.0, 0.5]],
   // the time-ordered file's spans, in days from Jul 1 00:00 (from its footer)
@@ -94,7 +94,7 @@ const sideBySide = (D) => `${zone(14, 8, 732, 362, "AVG(bikes_available) FOR 1 A
   <path class="rule" d="M40 160 H720"/>
   ${pair(184, "data read", "from the file", [174.4, 0.7445], [D.day.station[1], D.day.time[1]], 174.4)}
   <path class="rule" d="M40 262 H720"/>
-  ${pair(286, "time", "three runs each", [90, 9], [`about ${D.day.station[2]}`, `about ${D.day.time[2]}`], 90)}`;
+  ${pair(286, "time", "three runs each", [27, 3], [`about ${D.day.station[2]}`, `about ${D.day.time[2]}`], 27)}`;
 
 const sizeRow = ([c, a, b], i) => `${t(406, 124 + i * 46, c, "l mono")}
   <rect class="bar warm" x="510" y="${112 + i * 46}" width="${Math.max(2, a * 10)}" height="10" rx="3"/>

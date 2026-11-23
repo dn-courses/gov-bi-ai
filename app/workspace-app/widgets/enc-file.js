@@ -8,20 +8,21 @@ import { fmt, on, t, widget, zone, extra } from "./col-lib.js";
 //   files   parquet_metadata of the four writes: after encoding / on disk (MB)
 //   ms      SELECT count(DISTINCT captured_at), sum(docks_available) — best of 5, all cores
 //   readMb  the on-disk size of those two columns in each file
-//   oneCore the same query with SET threads = 1, best of 3
+//   oneCore the same query with SET threads = 1, best of 3 — re-measured in one held call, middle of
+//           three runs: 131.2–132.5, 226.2–226.6, 142.3–145.6, 142.1–143.0 ms
 // Re-measured 2026-11-23 on the 346 MB file page 01 writes (ORDER BY station_id, captured_at), in one
 // held lab call; timings are the middle of three runs (all cores: 40.9–51.7, 57.5–64.6, 42.3–50.5,
-// 40.3–61.9 ms; one core: 160.6–168.7, 247.0–274.7, 152.0–161.3, 152.8–191.8 ms).
+// 40.3–61.9 ms; one core: see oneCore).
 const CAPTURED = {
   cols: [["captured_at", 207.4, "PLAIN"], ["last_reported", 207.4, "PLAIN"], ["bikes_available", 16.3, "dictionary"],
     ["ebikes_available", 6.6, "dictionary"], ["docks_available", 5.6, "dictionary"], ["bikes_disabled", 3.4, "dictionary"],
     ["docks_disabled", 3.4, "dictionary"], ["3 yes/no, each", 3.2, "PLAIN"], ["vehicle_types", 0.1, "dictionary"],
     ["legacy_id", 0.1, "dictionary"], ["name", 0.1, "dictionary"], ["station_id", 0.0, "dictionary"], ["system_id", 0.0, "dictionary"]],
   files: [
-    { enc: "timestamps plain", codec: "not compressed", encoded: 460.0, disk: 460.0, readMb: 213.0, ms: 48.8, oneCore: 168.4 },
-    { enc: "timestamps plain", codec: "compressed", encoded: 460.1, disk: 345.5, readMb: 157.8, ms: 63.4, oneCore: 252.2 },
-    { enc: "timestamps as differences", codec: "not compressed", encoded: 67.5, disk: 67.5, readMb: 16.7, ms: 49.1, oneCore: 160.9 },
-    { enc: "timestamps as differences", codec: "compressed", encoded: 67.5, disk: 31.9, readMb: 1.0, ms: 46.8, oneCore: 156.0 },
+    { enc: "timestamps plain", codec: "not compressed", encoded: 460.0, disk: 460.0, readMb: 213.0, ms: 48.8, oneCore: 131.3 },
+    { enc: "timestamps plain", codec: "compressed", encoded: 460.1, disk: 345.5, readMb: 157.8, ms: 63.4, oneCore: 226.5 },
+    { enc: "timestamps as differences", codec: "not compressed", encoded: 67.5, disk: 67.5, readMb: 16.7, ms: 49.1, oneCore: 144.0 },
+    { enc: "timestamps as differences", codec: "compressed", encoded: 67.5, disk: 31.9, readMb: 1.0, ms: 46.8, oneCore: 142.6 },
   ],
   linkMBps: 125, // a 1 Gbit/s network moves 125 MB a second: arithmetic, not a measurement
 };
@@ -40,8 +41,8 @@ const steps = (D) => {
       note: `A newer version of the format writes a timestamp as its difference from the one before: +5 minutes, again and again, which is a run. The encoded file falls from ${Math.round(f[0].encoded)} MB to <b>${Math.round(f[2].encoded)} MB</b>. Compression then squeezes what the encoding left: ${Math.round(f[0].encoded)} → ${Math.round(f[1].disk)} MB, and ${Math.round(f[2].encoded)} → <b>${Math.round(f[3].disk)} MB</b>.` },
     { stop: "Timed", title: "Compressed or not, about the same time",
       note: `One query reads <code>captured_at</code> and <code>docks_available</code> from each file, best of five. The well-encoded files read ${f[2].readMb} MB or ${f[3].readMb} MB and take the same <b>~${Math.round(f[3].ms)} ms</b>. With plain timestamps, undoing the squeeze of ${Math.round(f[1].readMb)} MB adds about ${Math.round(f[1].ms - f[0].ms)} ms, shared by all the cores.` },
-    { stop: "Why it pays", title: "Undoing the squeeze costs less than moving what it saved", decisive: true,
-      note: `On one core, undoing ${Math.round(f[1].readMb)} MB of compressed bytes took about <b>${p1.undo} ms</b>. The ${p1.saved} MB it saved would take about <b>${p1.move} ms</b> to move over a 1 Gbit/s network, and the files of a lake come over a network. On top of a good encoding there is little left to undo: ${p2.undo < 5 ? "too little to measure" : `${p2.undo} ms`}.` },
+    { stop: "The trade", title: "Compression trades CPU for bytes moved", decisive: true,
+      note: `Measured here, on one core with the file already in memory: <b>${Math.round(f[1].oneCore)} ms</b> compressed against ${Math.round(f[0].oneCore)} ms not. Compression cost about ${p1.undo} ms and bought nothing on this laptop. What it bought is ${Math.round(p1.saved)} MB not stored and not moved. Over a 1 Gbit/s network those MB take about ${p1.move} ms (arithmetic, not measured): when the file comes over a network, as from a lake, compression wins; on local disk or in cache it does not. With a good encoding first it is nearly free, ${Math.round(f[2].oneCore)} against ${Math.round(f[3].oneCore)} ms: engines encode first and compress second.` },
   ];
 };
 
@@ -105,18 +106,22 @@ function timed(D) {
     ${t(40, 232, "timestamps as differences", "h l")}${timedRow(D, f[2], 260, kMb, kMs)}${timedRow(D, f[3], 300, kMb, kMs)}`;
 }
 
-function payRow(y, label, sub, w, val, cls, late) {
-  return `${t(44, y - 7, label, `l${cls === "acc" ? " acc" : ""}`)}${t(44, y + 13, sub, "lbl l")}
-    ${hbar(270, y - 13, w, 26, `${cls}${late ? " late" : ""}`)}${t(282 + Math.max(3, w), y + 1, val, val.startsWith("~") ? `big l ${cls}` : `lbl l ${cls}`)}`;
-}
+const msRow = (y, label, ms, k, cls) => `${t(44, y + 9, label, "l")}${hbar(230, y, ms * k, 18, cls)}${t(240 + ms * k, y + 10, `${Math.round(ms)} ms`, `big l ${cls}`)}`;
 
+// The trade in four rows, top to bottom: measured cost, what it bought, the network arithmetic, encode first.
 function pays(D) {
-  const ps = pairs(D), k = 340 / Math.max(...ps.map((p) => p.move));
-  const pair = (p, i) => { const y = 10 + i * 180;
-    return `${zone(24, y, 712, 168, p.enc.toUpperCase())}${t(44, y + 50, `compression saved ${p.saved} MB of reading`, "h l")}
-      ${payRow(y + 90, "move those bytes", "over a 1 Gbit/s network", p.move * k, `~${fmt(p.move)} ms`, "hot", false)}
-      ${payRow(y + 136, "undo the squeeze", "one core, measured", p.undo * k, p.undo < 5 ? "too small to measure" : `~${p.undo} ms`, "acc", true)}`; };
-  return ps.map(pair).join("");
+  const f = D.files, [p1, p2] = pairs(D), k = 300 / p1.move;
+  return `${zone(24, 6, 712, 92, "1 · MEASURED HERE — ONE CORE, THE FILE ALREADY IN MEMORY")}
+    ${msRow(38, "not compressed", f[0].oneCore, k, "dim")}${msRow(64, "compressed", f[1].oneCore, k, "hot")}
+    ${t(560, 50, `cost ~${p1.undo} ms`, "big l hot")}${t(560, 72, "bought nothing here", "lbl l")}
+    ${zone(24, 104, 712, 56, "2 · WHAT THOSE MS BOUGHT")}${t(44, 144, `${Math.round(p1.saved)} MB not stored and not moved`, "h l")}
+    ${t(560, 144, `${f[0].readMb.toFixed(1)} → ${f[1].readMb.toFixed(1)} MB read`, "lbl l")}
+    ${zone(24, 166, 712, 102, "3 · ARITHMETIC, NOT MEASURED — OVER A 1 GBIT/S NETWORK")}
+    ${msRow(198, `move ${Math.round(p1.saved)} MB`, p1.move, k, "hot")}${msRow(224, "undo the squeeze", f[1].oneCore - f[0].oneCore, k, "acc")}
+    ${t(44, 256, "from a lake or object storage, compression wins; from local disk or cache, it does not", "lbl l")}
+    ${zone(24, 274, 712, 92, "4 · ENCODE FIRST (TIMESTAMPS AS DIFFERENCES) — ONE CORE, MEASURED")}
+    ${msRow(306, "not compressed", f[2].oneCore, k, "dim")}${msRow(332, "compressed", f[3].oneCore, k, "acc")}
+    ${t(470, 318, p2.undo < 5 ? "compression nearly free" : `cost ~${p2.undo} ms`, "big l acc")}${t(470, 340, "encode first, compress second", "lbl l")}`;
 }
 
 const scene = (D) => `<svg viewBox="0 0 760 372">

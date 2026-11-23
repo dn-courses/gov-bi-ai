@@ -61,6 +61,16 @@ FROM parquet_metadata('station_status.parquet')
 WHERE path_in_schema = 'captured_at';
 ```
 
+The engine's own check: find `Row Groups Scanned` in the Table Scan, and `Data Read`.
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM 'station_status.parquet'
+WHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'
+  AND captured_at <  TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
+
 </Step>
 <Step>
 
@@ -92,8 +102,15 @@ ORDER BY row_group_id;
 </Step>
 <Step>
 
-The query from the start of the page, on the copy. Compare `Row Groups Scanned` and `Data Read`
-with the first run.
+The same query on both files, the original first. Compare `Row Groups Scanned` and `Data Read`.
+
+```duckdb
+EXPLAIN ANALYZE
+SELECT avg(bikes_available)
+FROM 'station_status.parquet'
+WHERE captured_at >= TIMESTAMPTZ '2026-08-01 00:00:00+00'
+  AND captured_at <  TIMESTAMPTZ '2026-08-02 00:00:00+00';
+```
 
 ```duckdb needs=sorted
 EXPLAIN ANALYZE

@@ -144,7 +144,7 @@ for file in FILES:
 </Step>
 <Step>
 
-On one core the cost of undoing the squeeze is not shared out, so it shows in full:
+Time it on one core, with the files already in memory, so the cost of undoing the squeeze shows in full:
 
 ```python
 con.sql("SET threads = 1")

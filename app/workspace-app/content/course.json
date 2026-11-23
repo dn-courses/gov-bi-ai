@@ -49,6 +49,8 @@
     }
   ],
   "labs": {
+    "data-warehousing/01-oltp-vs-olap": "postgres",
+    "data-warehousing/04-star-vs-snowflake": "postgres",
     "columnar-mpp/01-disk-memory-cpu": "postgres",
     "columnar-mpp/02-rows-and-columns": "postgres",
     "columnar-mpp/03-encoding-and-compression": "postgres",

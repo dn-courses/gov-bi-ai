@@ -94,7 +94,8 @@ if not model["metrics"].get("empty_share", {}).get("sql"):
                                        "sql": "ROUND(SAFE_DIVIDE(COUNTIF(num_bikes_available = 0), COUNT(num_bikes_available)), 4)"}
     (FOLDER / "model.yml").write_text(yaml.safe_dump(model, sort_keys=False, width=110))
 mine = FOLDER / "agent.py"
-if not mine.exists() or "NotImplementedError" in mine.read_text() or 'instruction=""' in mine.read_text():
+text = mine.read_text() if mine.exists() else ""
+if "root_agent" not in text or "NotImplementedError" in text or 'instruction=""' in text:
     print("agent.py is not finished yet: writing the reference one")
     mine.write_text(REFERENCE_AGENT)
 semantic, agent = load("semantic"), load("agent")
