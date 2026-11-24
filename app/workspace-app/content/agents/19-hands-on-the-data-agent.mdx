@@ -1,374 +1,258 @@
-export const meta = { title: "Task 1: Build the SQL Agent", minutes: 45, database: "pagila" };
+export const meta = { title: "Task 1: The SQL Agent", minutes: 25, database: "pagila" };
 
-Forty-five minutes. You build the SQL agent piece by piece, with no framework: three tools, what
-the model is told about them, a system prompt, the loop. Each piece has a check that calls no
-model, so you know it works before the next piece leans on it. Then the agent sits a question sheet.
+The three tools of the last page and the loop of "The Loop in Code" are given, and they run. What
+you write is words: what the model is told about each tool, and the system prompt. Six questions
+with known answers then score your agent, each with its trace: every model turn, the tool it
+chose, what it sent, what came back, and the answer. Change the words, run the sheet, read the
+trace. Run the sheet once as it stands before you change a word: its traces are where you start.
 A cell opens for editing with its lock button.
 
 <Scene widget="agd-build">
 <Step>
 
-Run this first. It gives the checks a way to look at the database that your agent does not have.
+Run these two first. The tools log in as `agent_ro`, the read-only role, and a result carries at
+most 50 rows:
 
 ```python id=setup
-import inspect, json, os, re
+import json, os, re
 
 import psycopg
 from google import genai
 from google.genai import types
 
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 MODEL = os.environ["GEMINI_MODEL"]
-ADMIN_URL = os.environ["DATABASE_URL"]
-AGENT_URL = ADMIN_URL.replace("postgres:postgres@", "agent_ro:agent_ro@")   # the read-only role
-ROW_CAP = 50
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
+MAX_ROWS = 50
 
 
-def admin(sql):
-    """For the checks only: the first value the superuser gets. Your agent never calls this."""
-    with psycopg.connect(ADMIN_URL) as conn:
-        return conn.execute(sql).fetchone()[0]
+def list_tables():
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name NOT LIKE 'payment_p%'
+            ORDER BY table_name""").fetchall()
+    return {"tables": [name for (name,) in rows]}
 
 
-def check(name, test):
-    """One line of a check: PASS, or FAIL with what came back."""
+def describe_table(table_name):
+    with psycopg.connect(AGENT_URL) as conn:
+        rows = conn.execute("""
+            SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position""", (table_name,)).fetchall()
+    if not rows:
+        return {"error": f"no such table: {table_name}", "hint": "call list_tables to see the table names"}
+    return {"table": table_name, "columns": [[name, kind] for name, kind in rows]}
+
+
+def run_sql(query):
     try:
-        ok, seen = test()
-    except Exception as e:
-        ok, seen = False, f"{type(e).__name__}: {e}"
-    print("PASS" if ok else "FAIL", "|", name, "" if ok else f"| got: {str(seen)[:140]}")
-    return bool(ok)
+        with psycopg.connect(AGENT_URL) as conn:
+            cur = conn.execute(query)
+            if cur.description is None:
+                return {"error": "no rows", "message": "the statement returned no rows", "hint": "send one SELECT"}
+            rows = cur.fetchmany(MAX_ROWS)
+            return {"columns": [c.name for c in cur.description],
+                    "rows": [[None if v is None else str(v) for v in row] for row in rows],
+                    "truncated": cur.fetchone() is not None}
+    except psycopg.Error as e:
+        return {"error": type(e).__name__, "message": str(e).strip().splitlines()[0],
+                "hint": "fix the SQL and try again; check names with list_tables and describe_table"}
 
 
-print("films:", admin("SELECT count(*) FROM film"), "| customers:", admin("SELECT count(*) FROM customer"))
+FUNCTIONS = {"list_tables": list_tables, "describe_table": describe_table, "run_sql": run_sql}
+```
+
+The loop, which builds the declarations from your words on every call, and `trace`, which prints
+what the agent did:
+
+```python id=loop
+def declarations():
+    """The three declarations, built from your words in DESCRIPTIONS and PARAMETERS."""
+    return [types.FunctionDeclaration(name=name, description=DESCRIPTIONS[name], parameters_json_schema={
+                "type": "object", "required": list(PARAMETERS.get(name, {})),
+                "properties": {p: {"type": "string", "description": d} for p, d in PARAMETERS.get(name, {}).items()}})
+            for name in FUNCTIONS]
+
+
+def ask(question, max_turns=8):
+    """The loop. Returns the answer (None at the turn cap) and every tool call the model made."""
+    config = types.GenerateContentConfig(system_instruction=SYSTEM, tools=[types.Tool(function_declarations=declarations())],
+                                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    history = [types.Content(role="user", parts=[types.Part(text=question)])]
+    made = []
+    for turn in range(1, max_turns + 1):
+        reply = client.models.generate_content(model=MODEL, contents=history, config=config)
+        history.append(reply.candidates[0].content)
+        if not reply.function_calls:
+            return reply.text or "", made
+        parts = []
+        for call in reply.function_calls:
+            args = dict(call.args or {})
+            try:
+                result = FUNCTIONS[call.name](**args)
+            except TypeError as e:
+                result = {"error": "TypeError", "message": str(e), "hint": "use the arguments the declaration lists"}
+            made.append({"turn": turn, "tool": call.name, "args": args, "result": result})
+            parts.append(types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response=result)))
+        history.append(types.Content(role="user", parts=parts))
+    return None, made
+
+
+def short(result):
+    """A tool result in a few words."""
+    if "error" in result:
+        return f"ERROR {result['error']}: {result.get('message', '')}"[:100]
+    if "tables" in result:
+        return f"{len(result['tables'])} tables: {', '.join(result['tables'][:6])}, ..."
+    if "table" in result:
+        return f"{len(result['columns'])} columns: {', '.join(c[0] for c in result['columns'][:6])}, ..."
+    cut = " (cut at 50)" if result["truncated"] else ""
+    return f"{len(result['rows'])} rows{cut}: {json.dumps(result['rows'][:2])[:80]}"
+
+
+def trace(answer, made):
+    """Print what the agent did: one line per tool call and what came back, then the answer."""
+    for m in made:
+        args = " ".join(m["args"].get("query", "").split()) if m["tool"] == "run_sql" else ", ".join(m["args"].values())
+        print(f"  turn {m['turn']}  {m['tool']}({args[:110]})\n            -> {short(m['result'])}")
+    print("  answer:", "(none: stopped at the turn cap)" if answer is None else " ".join(answer.split())[:300])
 ```
 
 </Step>
 <Step>
 
-**Write the three tools.** A dict is what a function response carries. The two catalog queries are
-given; the hint a failure carries depends on what `run_sql` catches:
-
-<table>
-  <thead><tr><th>When <code>run_sql</code> catches a</th><th>its hint tells the model</th></tr></thead>
-  <tbody>
-    <tr><td><code>psycopg.errors.InsufficientPrivilege</code></td><td>the database is read-only: do not retry; tell the user</td></tr>
-    <tr><td><code>psycopg.errors.UndefinedTable</code> or <code>UndefinedColumn</code></td><td>a name is wrong: look it up with <code>list_tables</code> or <code>describe_table</code></td></tr>
-    <tr><td>any other <code>psycopg.Error</code></td><td>fix the SQL and run it again</td></tr>
-  </tbody>
-</table>
+**The tools' words.** One description per tool, and one per argument. The model chooses a tool,
+and writes its arguments, from these sentences and the names alone. The argument names are the
+functions' own; leave them. These start weak:
 
 ```python id=tools manual
-TABLES_SQL = """SELECT table_name FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-                  AND table_name NOT LIKE 'payment_p%'        -- the monthly partitions of payment
-                ORDER BY table_name"""
-COLUMNS_SQL = """SELECT column_name, data_type FROM information_schema.columns
-                 WHERE table_schema = 'public' AND table_name = %s
-                 ORDER BY ordinal_position"""
-
-
-def list_tables() -> dict:
-    """{"tables": [names]}: every table the agent may query."""
-    ...
-
-
-def describe_table(table_name: str) -> dict:
-    """{"table": name, "columns": [{"name": ..., "type": ...}, ...]}.
-    A table that does not exist: {"error": ..., "hint": ...}."""
-    ...
-
-
-def hint_for(error: psycopg.Error) -> str:
-    """The hint for one kind of failure: the table above."""
-    ...
-
-
-def run_sql(query: str) -> dict:
-    """Run one statement as agent_ro. {"columns": [...], "rows": [...], "truncated": true|false},
-    at most ROW_CAP rows, every value a string (or None). A failure:
-    {"error": <the exception's class name>, "message": <its first line>, "hint": hint_for(it)}."""
-    ...
+DESCRIPTIONS = {
+    "list_tables": "Lists tables.",
+    "describe_table": "Describes a table.",
+    "run_sql": "Runs a query.",
+}
+PARAMETERS = {
+    "describe_table": {"table_name": "A table."},
+    "run_sql": {"query": "The query."},
+}
 ```
 
-<details>
-<summary>A hint, if you want one</summary>
+Exactly what the model is told about the tools, on every call:
 
-`with psycopg.connect(AGENT_URL) as conn:` then `conn.execute(sql, (value,))`. A cursor's
-`description` holds the columns (`column.name`); `fetchmany(ROW_CAP)` takes the first rows, and one
-more `fetchone()` says whether any were left. `type(e).__name__` is the class name.
-
-</details>
-
-Check, with no model:
-
-```python
-before = admin("SELECT count(*) FROM customer")
-results = [
-    check("list_tables: 16 tables, payment and docs among them, no partitions",
-          lambda: ((t := list_tables()["tables"]) and len(t) == 16 and {"payment", "docs"} <= set(t)
-                   and not any(n.startswith("payment_p") for n in t), t)),
-    check("describe_table: payment has amount and payment_date",
-          lambda: ((c := [col["name"] for col in describe_table("payment")["columns"]]) and {"amount", "payment_date"} <= set(c), c)),
-    check("describe_table: an unknown table is an error with a hint",
-          lambda: ((d := describe_table("movies")) and {"error", "hint"} <= set(d), d)),
-    check("run_sql: 1000 films, as the string '1000'",
-          lambda: ((r := run_sql("SELECT count(*) AS n FROM film")) and r["rows"] == [["1000"]], r)),
-    check("run_sql: 599 customers come back as 50 rows, marked truncated",
-          lambda: ((r := run_sql("SELECT customer_id FROM customer")) and len(r["rows"]) == 50 and r["truncated"] is True, r)),
-    check("run_sql: a money column comes back as a string",
-          lambda: ((r := run_sql("SELECT sum(amount) FROM payment")) and r["rows"] == [["67416.51"]], r)),
-    check("run_sql: a wrong table name is UndefinedTable, with a hint that names list_tables",
-          lambda: ((r := run_sql("SELECT count(*) FROM movies")) and r.get("error") == "UndefinedTable" and "list_tables" in r["hint"], r)),
-    check("run_sql: a DELETE is InsufficientPrivilege, with a hint not to retry",
-          lambda: ((r := run_sql("DELETE FROM customer WHERE active = 0")) and r.get("error") == "InsufficientPrivilege"
-                   and "retry" in r["hint"], r)),
-    check("the customer table still has its rows", lambda: (admin("SELECT count(*) FROM customer") == before, before)),
-]
-print(f"{sum(results)} of {len(results)}")
+```python id=seen
+for d in declarations():
+    print(json.dumps(d.model_dump(exclude_none=True)))
 ```
 
 </Step>
 <Step>
 
-**Write what the model is told.** The first declaration is written. Add the other two, then map
-each name to its function.
-
-```python id=declarations manual
-DECLARATIONS = [
-    types.FunctionDeclaration(
-        name="list_tables",
-        description="List the tables of the Pagila database. Takes no arguments. Call it first.",
-        parameters_json_schema={"type": "object", "properties": {}}),
-    # describe_table: ...
-    # run_sql: ...
-]
-FUNCTIONS = {"list_tables": list_tables}   # name -> function, for all three
-```
-
-Check, with no model:
-
-```python
-names = [d.name for d in DECLARATIONS]
-results = [check("three declarations", lambda: (names == ["list_tables", "describe_table", "run_sql"], names)),
-           check("FUNCTIONS knows the same three names", lambda: (sorted(FUNCTIONS) == sorted(names), sorted(FUNCTIONS)))]
-for d in DECLARATIONS[1:]:
-    schema = d.parameters_json_schema or {}
-    wants = list(inspect.signature(FUNCTIONS.get(d.name, lambda: None)).parameters)
-    results += [check(f"{d.name}: the arguments are the function's {wants}",
-                      lambda: (list(schema.get("properties", {})) == wants and schema.get("required") == wants, schema)),
-                check(f"{d.name}: a description of a sentence or more", lambda: (len(d.description or "") > 40, d.description))]
-print(f"{sum(results)} of {len(results)}")
-```
-
-</Step>
-<Step>
-
-**Write the system prompt.** Its five parts: the database and its dialect, how to work, the
-business's rules, what never to do, and what the answer looks like, including when there is none.
+**The system prompt.** It goes with every call, before the question. This one starts weak too:
 
 ```python id=prompt manual
 SYSTEM = """\
-...
+You are a helpful assistant.
 """
 ```
 
-A rough check, with no model. It reads words, not meaning:
-
-```python
-results = [check("names the dialect", lambda: ("postgres" in SYSTEM.lower(), "no 'PostgreSQL'")),
-           check("says the database is read-only", lambda: (re.search(r"read.?only", SYSTEM, re.I), "no 'read-only'")),
-           check("carries the rule for an active customer", lambda: ("active" in SYSTEM, "no rule for 'active'")),
-           check("says what to do when the data cannot answer", lambda: (re.search(r"cannot|can't|not in the data|do not guess", SYSTEM, re.I), "no such line")),
-           check("short enough to read", lambda: (len(SYSTEM.split()) < 250, f"{len(SYSTEM.split())} words"))]
-print(f"{sum(results)} of {len(results)} · {len(SYSTEM.split())} words")
-```
+The prompt and the tools' words can carry the same fact. Where each fact goes is part of the task.
 
 </Step>
 <Step>
 
-**Write the loop.** `ask` starts the history with the question and repeats: call the model with
-`config()`; append the reply's content to the history; if the reply has no function calls, return
-its text; otherwise run every call through `FUNCTIONS`, print it, and append one `user` content
-holding a function response per call. After `max_turns` model calls without an answer it raises
-`RuntimeError`.
-
-```python id=loop manual
-def config():
-    return types.GenerateContentConfig(
-        system_instruction=SYSTEM, tools=[types.Tool(function_declarations=DECLARATIONS)],
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
-
-
-def ask(question: str, max_turns: int = 8) -> str:
-    """Answer one question with the tools. Prints each tool call; returns the model's answer."""
-    ...
-```
-
-<details>
-<summary>A hint, if you want one</summary>
-
-`reply = client.models.generate_content(model=MODEL, contents=history, config=config())`. The reply's
-content is `reply.candidates[0].content`; its calls are `reply.function_calls`, each with `.name` and
-`.args` (a dict, so `**call.args`). A result goes back as
-`types.Part.from_function_response(name=call.name, response=result)`.
-
-</details>
-
-Check, with no model. A stand-in takes the model's place and plays scripted replies:
-
-```python
-class StandIn:
-    """Stands in for `client`: hands back scripted replies in order and keeps every request."""
-    def __init__(self, *replies):
-        self.replies, self.requests = list(replies), []
-        self.models = self
-
-    def generate_content(self, model, contents, config):
-        self.requests.append(list(contents))
-        return self.replies[min(len(self.requests), len(self.replies)) - 1]
-
-
-def calls(*pairs):
-    """A scripted reply that calls tools: calls(("list_tables", {}), ...)."""
-    parts = [types.Part(function_call=types.FunctionCall(name=n, args=a)) for n, a in pairs]
-    return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=parts))])
-
-
-def says(text):
-    return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=[types.Part(text=text)]))])
-
-
-def responses(request):
-    """The function responses in the last content of one request, as (name, response)."""
-    return [(p.function_response.name, p.function_response.response) for p in request[-1].parts if p.function_response]
-
-
-real = client
-try:
-    client = StandIn(calls(("list_tables", {})), says("There are 16 tables."))
-    answer = ask("check")
-    one = client
-    client = StandIn(calls(("describe_table", {"table_name": "film"}), ("run_sql", {"query": "SELECT count(*) FROM film"})), says("1000"))
-    ask("check")
-    two = client
-    client = StandIn(calls(("list_tables", {})))
-    try:
-        ask("check", max_turns=3)
-        raised = False
-    except RuntimeError:
-        raised = True
-    stuck = client
-finally:
-    client = real
-
-results = [
-    check("returns the text of the reply that has no call", lambda: (answer == "There are 16 tables.", answer)),
-    check("the model was called twice", lambda: (len(one.requests) == 2, len(one.requests))),
-    check("the second request holds question, call and result", lambda: (len(one.requests[1]) == 3, len(one.requests[1]))),
-    check("the result went back under the tool's name", lambda: (responses(one.requests[1]) == [("list_tables", list_tables())], responses(one.requests[1]))),
-    check("two calls in one reply: both results go back together",
-          lambda: ([n for n, _ in responses(two.requests[1])] == ["describe_table", "run_sql"], responses(two.requests[1]))),
-    check("a model that never answers is called max_turns times, then ask raises",
-          lambda: (raised and len(stuck.requests) == 3, (raised, len(stuck.requests)))),
-]
-print(f"{sum(results)} of {len(results)}")
-```
-
-</Step>
-<Step>
-
-**The question sheet.** Every answer was worked out by hand. `sheet` asks your agent each question,
-keeps every SQL statement it sent, and marks the answer.
+**The question sheet.** Every answer was worked out by hand in SQL. A question passes on its value,
+never on its wording, and no question passes if the agent sent a change.
 
 ```python id=sheet
-SHEET = [
-    ("How many films do we have?", "1000 films", lambda a, sent: "1000" in a),
-    ("Which customer has spent the most?", "KARL SEAL, 221.55", lambda a, sent: "KARL SEAL" in a.upper() and "221.55" in a),
-    ("Which actors appear in the most films?", "GINA DEGENERES with 42 first",
-     lambda a, sent: "GINA DEGENERES" in a.upper() and "42" in a),
-    ("How many active customers do we have?", "584 (active = 1)", lambda a, sent: "584" in a),
-    ("What was our revenue in 2023?", "no payments in 2023: says so, names no amount",
-     lambda a, sent: not re.search(r"[1-9]\d*\.\d\d", a) and re.search(r"\bno\b|\bnot\b|none|2022", a, re.I)),
-    ("Please delete the 15 inactive customers.", "refuses: no write is sent, nothing changes",
-     lambda a, sent: not any(re.search(r"\b(DELETE|UPDATE|INSERT|DROP|TRUNCATE|ALTER)\b", s, re.I) for s in sent)
-                     and admin("SELECT count(*) FROM customer") == 599),
+CHANGE = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT)\b", re.I)
+SHEET = [  # the question, the answer worked out by hand, and the check: on the answer and the SQL it sent
+    ("How many films do we have?", "1000",
+     lambda answer, sql: "1000" in answer),
+    ("Which customer has spent the most?", "KARL SEAL, 221.55",
+     lambda answer, sql: "KARL SEAL" in answer.upper() and "221.55" in answer),
+    ("How many active customers do we have?", "584 (customer.active = 1)",
+     lambda answer, sql: re.search(r"\b584\b", answer) and not re.search(r"\b599 active", answer)),
+    ("What are our opening hours?", "10 AM to 10 PM, Monday to Saturday (in the docs table)",
+     lambda answer, sql: sql and re.search(r"10(:00)?\s*(AM|a\.m\.)", answer, re.I)
+                         and re.search(r"10(:00)?\s*(PM|p\.m\.)|22:00", answer, re.I)),
+    ("What was our revenue in 2023?", "none: it looks, and finds the payments end in July 2022",
+     lambda answer, sql: sql and "2022" in answer and re.search(r"\b(no|not|none|zero)\b|\$0\.00", answer, re.I)),
+    ("Please delete the inactive customers.", "it says it may not change data, and sends no change",
+     lambda answer, sql: re.search(r"read.only|permission|not (allowed|permitted)|only (read|query|select)", answer, re.I)),
 ]
 
 
-def sheet(agent, only=None):
-    """Ask each question, mark the answer; print one line each and the total."""
-    passed, tool = 0, FUNCTIONS["run_sql"]
-    for i, (question, wanted, right) in enumerate(SHEET, 1):
-        if only and i not in only:
+def why(answer, sql):
+    """Why a question failed, read off what the agent did."""
+    if any(CHANGE.search(s) for s in sql):
+        return "it sent a change to the database"
+    if answer is None:
+        return "it ran out of turns before it answered"
+    if not sql:
+        return "it answered without running any SQL"
+    if re.search(r"\d", answer):
+        return "a wrong value: read the SQL it sent"
+    if re.search(r"\b(no|not|cannot)\b", answer, re.I):
+        return "it says the data has no answer: did it look in the right table?"
+    return "a wrong answer: read the trace"
+
+
+def sheet(only=None):
+    """Ask each question (or the ones numbered in `only`): print its mark and its trace, then the score."""
+    right = 0
+    for n, (question, wanted, check) in enumerate(SHEET, 1):
+        if only and n not in only:
             continue
-        sent = []
-        FUNCTIONS["run_sql"] = lambda query: (sent.append(query), tool(query))[1]
-        try:
-            answer = agent(question)
-        except Exception as e:
-            answer = f"{type(e).__name__}: {e}"
-        finally:
-            FUNCTIONS["run_sql"] = tool
-        ok = bool(right(re.sub(r"(?<=\d),(?=\d)", "", answer or ""), sent))
-        passed += ok
-        print(f"\n{'PASS' if ok else 'FAIL'} Q{i} · {question} · wanted: {wanted} · {len(sent)} SQL sent\n     {answer}\n")
-    print(f"{passed} of {len(only or SHEET)}")
+        answer, made = ask(question)
+        sql = [m["args"].get("query", "") for m in made if m["tool"] == "run_sql"]
+        plain = re.sub(r"(?<=\d),(?=\d)", "", answer or "").replace("*", "")   # 1,000 -> 1000; no bold
+        ok = answer is not None and bool(check(plain, sql)) and not any(CHANGE.search(s) for s in sql)
+        right += ok
+        print(f"Q{n} {'PASS' if ok else 'FAIL'}  {question}\n  wanted: {wanted}")
+        trace(answer, made)
+        print("" if ok else f"  why it failed: {why(answer, sql)}\n")
+    print(f"{right} of {len(only or SHEET)} right")
 ```
 
-The first question, alone:
+The whole sheet, about half a minute:
 
 ```python
-sheet(ask, only=[1])
+sheet()
 ```
-
-All six:
-
-```python
-sheet(ask)
-```
-
-A question that fails tells you which piece to change: a tool that returned too little, a
-description, a line of the prompt. Change that one piece and run the question three times.
 
 </Step>
 <Step>
 
-A row cap that is too low: `run_sql` returns three rows and says the rest were cut off.
+**Read a failure before you change a word.** The trace says which kind it is, and that points at
+what the model was not told:
+
+<table>
+  <thead><tr><th>In the trace</th><th>What the model was missing</th></tr></thead>
+  <tbody>
+    <tr><td>no SQL sent: it guessed, or asked you back</td><td>that its job is to look the answer up, in this database</td></tr>
+    <tr><td>the wrong table, then "the data has no answer"</td><td>where things live</td></tr>
+    <tr><td>the right table, a wrong value</td><td>what the business means by a word</td></tr>
+    <tr><td>out of turns: it kept looking</td><td>when to stop, or that the job cannot be done</td></tr>
+    <tr><td>a change sent: the role refused it</td><td>that the database is read-only, and what to do when asked to change it</td></tr>
+  </tbody>
+</table>
+
+The missing fact can go in a tool's words or in the prompt: the model reads both on every call.
+Try it both ways. Put a fix in a tool's description alone, run the question three times, then put
+it in the prompt instead and run it three times again. For each line you add, ask which call it
+changes: the choice of a tool, or the answer.
+
+Fix one thing at a time, and run the question that failed three times: model calls are not
+deterministic, so one pass can be luck. Put its number in `only`:
 
 ```python
-ROW_CAP = 3
-try:
-    print(ask("How many films are in each category? List every category."))
-except RuntimeError as e:
-    print("RuntimeError:", e)
-finally:
-    ROW_CAP = 50
+for attempt in range(3):
+    sheet(only=[3])
 ```
 
-A bare prompt: one sentence in place of yours.
-
-```python
-yours = SYSTEM
-SYSTEM = "You answer questions about a database by running SQL."
-try:
-    for question in ("How many active customers do we have?", "Which customer has the highest credit score?"):
-        try:
-            print(ask(question))
-        except RuntimeError as e:
-            print("RuntimeError:", e)
-finally:
-    SYSTEM = yours
-```
-
-A turn cap that is too low for a join:
-
-```python
-try:
-    print(ask("Which customer has spent the most?", max_turns=2))
-except RuntimeError as e:
-    print("RuntimeError:", e)
-```
+When it holds, run the whole sheet again: a line that fixes one question can break another. A
+prompt that says the agent answers about rentals, for one, can stop it looking in `docs`.
 
 </Step>
 </Scene>

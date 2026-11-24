@@ -1,0 +1,229 @@
+export const meta = { title: "Task 4: Design the Tools", minutes: 20, database: "pagila" };
+
+Twenty minutes. A store manager asks about the two stores of the Pagila business: which copies are
+on the shelf, what a customer still has out, how much is rented. No tool for these jobs exists yet.
+You write them: the functions, their names, their arguments with type hints, and their docstrings.
+ADK turns each one into the declaration the model reads, as it did on the ADK page. No free SQL:
+the tools run queries you wrote, for the reasons of "Why Free SQL Is Not Production".
+
+<Scene widget="agt4-design">
+<Step>
+
+Run this first; you will not edit it. It gives your tools `read(query, *params)`, which runs one
+parameterised query as the read-only `agent_ro` role, and it holds the agent, the question sheet
+and the scorer. You call two things from it: `score(TOOLS)` and `ask(TOOLS, question)`. The agent's
+instruction is fixed; only its tools change.
+
+```python id=setup
+import asyncio, json, logging, os, re, time
+
+import psycopg
+from psycopg import sql
+from google.adk.agents import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import InMemoryRunner
+from google.adk.tools import FunctionTool
+from google.genai import types
+
+logging.getLogger("google_adk").setLevel(logging.CRITICAL)   # a stopped run is reported below, not as a traceback
+AGENT_URL = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")   # read-only
+
+
+def read(query, *params):
+    """Run one read-only query as agent_ro with %s placeholders; the rows as dicts, every value as text."""
+    with psycopg.connect(AGENT_URL, connect_timeout=5, options="-c statement_timeout=5000") as conn:
+        cur = conn.execute(query, params)
+        names = [c.name for c in cur.description]
+        return [{n: None if v is None else str(v) for n, v in zip(names, row)} for row in cur.fetchall()]
+
+
+INSTRUCTION = ("You help the manager of a DVD-rental business with two stores, store 1 and store 2. "
+               "Answer only from what the tools return. If the tools cannot answer, say so. "
+               "End your reply with one last line, ANSWER: followed by only the answer: a number in digits, "
+               "or titles separated by '; ', or for a number per item 'ITEM NUMBER; ITEM NUMBER'.")
+
+# The question sheet and the ANSWER line each one expects, measured with plain SQL on pagila.
+SHEET = [
+    ("How many copies of LUST LOCK are on the shelf at store 1 right now?", "3"),
+    ("Which films does TAMMY SANDERS still have out?", "LUST LOCK; TROUBLE DATE; SLEEPY JAPANESE"),
+    ("How many of store 1's copies are rented out right now?", "92"),
+    ("What was the last film MARY SMITH rented?", "BIKINI BORROWERS"),
+    ("How many copies of CREATURES SHAKESPEARE are on the shelf at each store?", ("STORE 1 0; STORE 2 4", "0; 4")),
+    ("TAMMY SANDERS wants ACADEMY DINOSAUR. How many copies are on the shelf at her own store?", "3"),
+    ("For each film TAMMY SANDERS still has out, how many copies are on the shelf at her own store?",
+     "LUST LOCK 1; TROUBLE DATE 4; SLEEPY JAPANESE 1"),
+]
+
+
+async def ask(tools, question, cap=12):
+    """One question to an ADK agent with these tools: the calls it made, model calls, tokens, answer."""
+    agent = Agent(name="store_desk", model=os.environ["GEMINI_MODEL"], instruction=INSTRUCTION, tools=tools,
+                  # a call that hangs fails after 30 s, retried once
+                  generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}})
+    runner = InMemoryRunner(agent=agent, app_name="store_desk")
+    session = await runner.session_service.create_session(app_name="store_desk", user_id="me")
+    run = {"calls": [], "model_calls": 0, "tokens": 0, "errors": 0, "answer": "", "stopped": None}
+    message = types.Content(role="user", parts=[types.Part(text=question)])
+    try:
+        async for event in runner.run_async(user_id="me", session_id=session.id, new_message=message,
+                                            run_config=RunConfig(max_llm_calls=cap)):
+            if event.content and event.content.role == "model":
+                run["model_calls"] += 1
+                run["tokens"] += (event.usage_metadata.total_token_count or 0) if event.usage_metadata else 0
+            run["calls"] += [(c.name, dict(c.args or {})) for c in event.get_function_calls()]
+            run["errors"] += sum('"error"' in json.dumps(r.response or {}, default=str) for r in event.get_function_responses())
+            if event.is_final_response() and event.content and event.content.parts:
+                run["answer"] = (event.content.parts[0].text or "").strip()
+    except Exception as e:   # the cap on model calls, a tool that raised, or the model service
+        run["stopped"] = f"{type(e).__name__}: {str(e)[:150]}"
+    return run
+
+
+def items(text):
+    """An ANSWER line as its items: capitals, letters and digits only. Bare numbers keep their order."""
+    found = [" ".join(re.sub(r"[^A-Z0-9 ]", " ", part.upper()).split()) for part in text.split(";")]
+    found = [item for item in found if item]
+    return found if all(item.isdigit() for item in found) else sorted(found)
+
+
+def answer_line(answer):
+    found = re.findall(r"ANSWER\W*(.+)", answer, re.I)
+    return found[-1] if found else ""
+
+
+def passed(run, expected):
+    """True when the ANSWER line holds the expected items; `expected` is one answer or a tuple of ways to write it."""
+    return any(items(answer_line(run["answer"])) == items(e) for e in ([expected] if isinstance(expected, str) else expected))
+
+
+async def score(tools, at_once=3):
+    """Ask the whole sheet, a few questions at a time; print each one's calls, cost and verdict, then the total."""
+    print("tools:", [tool.__name__ for tool in tools], "\n")
+    gate, start = asyncio.Semaphore(at_once), time.time()
+
+    async def one(question):
+        async with gate:
+            return await ask(tools, question)
+
+    runs = await asyncio.gather(*(one(q) for q, _ in SHEET))
+    for n, ((q, expected), run) in enumerate(zip(SHEET, runs), 1):
+        verdict = "PASS" if passed(run, expected) else "STOPPED" if run["stopped"] else "FAIL"
+        print(f"Q{n} {verdict}  {q}\n   expected  ANSWER: {' or '.join([expected] if isinstance(expected, str) else expected)}")
+        for name, args in run["calls"]:
+            print(f"   call      {name}({json.dumps(args)[:100]})")
+        print(f"   cost      {run['model_calls']} model calls, {run['errors']} tool errors, {run['tokens']:,} tokens")
+        print(f"   answer    {run['stopped'] or run['answer'][-240:]}\n")
+    total = sum(passed(r, e) for (_, e), r in zip(SHEET, runs))
+    print(f"SCORE {total}/{len(SHEET)} | model calls {sum(r['model_calls'] for r in runs)}"
+          f" | tool calls {sum(len(r['calls']) for r in runs)} | tool errors {sum(r['errors'] for r in runs)}"
+          f" | tokens {sum(r['tokens'] for r in runs):,} | {time.time() - start:.0f} s")
+    return runs
+```
+
+</Step>
+<Step>
+
+What you need to know of Pagila to write the SQL inside your tools:
+
+- titles and names are stored in capitals: `'LUST LOCK'`, `first_name = 'TAMMY'`;
+- a copy is a row of `inventory`, and it belongs to one store, `inventory.store_id`;
+- a copy is out while a `rental` of it has `return_date IS NULL`;
+- a customer's own store is `customer.store_id`; `rental.rental_date` says when.
+
+The four tables, and one rental with its copy, film and customer:
+
+```sql
+SELECT r.rental_id, r.rental_date, r.return_date, i.inventory_id, i.store_id AS copy_store,
+       f.film_id, f.title, c.customer_id, c.first_name, c.last_name, c.store_id AS home_store
+FROM rental r JOIN inventory i USING (inventory_id) JOIN film f USING (film_id) JOIN customer c USING (customer_id)
+WHERE r.return_date IS NULL
+LIMIT 3;
+```
+
+</Step>
+<Step>
+
+Your toolset. It starts as the starter, `get_rows`. Replace it with your own functions and list
+them in `TOOLS`. A tool is a function with type hints and a docstring with an `Args:` section, as
+on the ADK page; inside it, `read` is the only way to the data, and the SQL is yours.
+
+```python id=tools manual
+def get_rows(table: str, column: str, value: str) -> dict:
+    """Return up to 20 rows of one Pagila table where a column equals a value.
+
+    Args:
+        table: a table name, such as film, customer, inventory or rental.
+        column: a column of that table.
+        value: the value to match, as text.
+    """
+    query = sql.SQL("SELECT * FROM {} WHERE {}::text = %s LIMIT 20").format(sql.Identifier(table), sql.Identifier(column))
+    try:
+        return {"rows": read(query, value)}
+    except psycopg.Error as e:
+        return {"error": str(e).strip()}
+
+
+TOOLS = [get_rows]
+```
+
+What the model reads of your tools, without calling it. Run your tools cell first, then this:
+
+```python
+for tool in TOOLS:
+    declaration = FunctionTool(tool)._get_declaration()
+    print(declaration.name, json.dumps(declaration.parameters_json_schema), "\n  ", declaration.description, "\n")
+```
+
+The sheet: seven questions, three at a time; the starter takes about fifteen seconds, a good toolset
+under ten. Per question it prints the verdict,
+every call with its arguments, the model calls and tokens it took, and the end of the answer:
+
+```python id=score
+runs = await score(TOOLS)
+```
+
+A question passes when the agent's ANSWER line holds exactly the expected items, in any order; the
+wording above it does not count. Keep the SCORE line of each run: score, model calls and tokens
+move separately, and a design that passes in half the calls is the better one. The model is not
+the same twice, so a toolset is done when it passes the sheet twice in a row.
+
+One question alone, with its calls:
+
+```python
+run = await ask(TOOLS, "How many copies of ZORRO ARK does each store have?")
+print(run["calls"], run["model_calls"], "model calls\n", run["stopped"] or run["answer"])
+```
+
+Once your toolset passes, two experiments, one run each:
+
+- take one tool out of `TOOLS` and run the sheet: which questions fail, and what do the answers say?
+- add a tool that overlaps one of yours (say, one that counts a film's copies at one store) and run
+  it again: does the model pick it, and for which question? The score may not move; the call lines
+  and the tokens will.
+
+</Step>
+</Scene>
+
+## What the design changed
+
+Read this after your own runs: it holds a toolset that passes. The same sheet and the same
+instruction, with six toolsets, each recorded three times.
+
+<Scene widget="agt4-compare">
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+The instruction was never edited: every point of score above came from what the tools are, what
+they take and what they return. The model chooses among them from their names and docstrings
+alone, and it can do no more than they let it.

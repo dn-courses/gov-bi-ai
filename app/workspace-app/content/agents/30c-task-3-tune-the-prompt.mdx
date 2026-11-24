@@ -1,0 +1,192 @@
+export const meta = { title: "Task 3: Tune the Prompt", minutes: 20 };
+
+An instruction is usually tuned by reading answers: change a sentence, ask a question, keep the
+version that reads better. Every answer reads well, so reading cannot tell which instruction is
+right. The checks of the last page can: score the warehouse agent on questions with known values,
+change the words, score again. And once the words are tuned to those questions, a few questions
+you never tuned on say whether you improved the agent or fitted the questions.
+
+<Scene widget="agt3-tune">
+<Step>
+
+Run this first; you will not edit it. It loads the warehouse agent (the reference one if yours is
+not finished), and holds the scorer, the tuning set (eight questions, each with its expected value,
+measured on the table without the agent) and the held-out set, kept for the end. Each check reads
+the rows of the last query that ran. For the scoring run each query may read at most 300 MB; every
+right answer reads less.
+
+```python id=setup needs=30-evals-and-observability#reference
+import asyncio, base64, json, logging, time
+
+from google.adk.agents import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+# Keep the score readable: the libraries' own logs (a retried call, a run that hit its limit) are not printed.
+for name in ["google_adk", "google_genai", "opentelemetry", "openinference"]:
+    logging.getLogger(name).setLevel(logging.CRITICAL)
+
+
+def build(instruction, descriptions=None):
+    """The warehouse agent with this instruction. `descriptions` replace what list_metrics says of a
+    metric or a dimension, by name."""
+    tools = load("agent")
+    tools.MAX_BYTES = 300_000_000
+    for name, text in (descriptions or {}).items():
+        (tools.semantic.METRICS.get(name) or tools.semantic.DIMENSIONS[name])["description"] = text
+    return Agent(name="warehouse_agent", model=os.environ["GEMINI_MODEL"], instruction=instruction,
+                 tools=[tools.list_metrics, tools.query_metrics],
+                 generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}})
+
+
+async def run(root_agent, question):
+    """One question: the tools called, the last query that ran (columns and rows), the bytes, the answer."""
+    runner = InMemoryRunner(agent=root_agent, app_name="warehouse_agent")
+    session = await runner.session_service.create_session(app_name="warehouse_agent", user_id="me")
+    out = {"calls": [], "columns": [], "rows": None, "bytes": 0, "answer": ""}
+    async for event in runner.run_async(user_id="me", session_id=session.id, run_config=RunConfig(max_llm_calls=8),
+                                        new_message=types.Content(role="user", parts=[types.Part(text=question)])):
+        out["calls"] += [(call.name, dict(call.args)) for call in event.get_function_calls()]
+        for response in event.get_function_responses():
+            if response.response.get("status") == "ok":
+                out["bytes"] += response.response["bytes"]
+                out["columns"], out["rows"] = response.response["columns"], response.response["rows"]
+        if event.is_final_response() and event.content and event.content.parts:
+            out["answer"] = (event.content.parts[0].text or "").strip()
+    return out
+
+
+# What a check reads from a run. Rows come sorted by the first metric, highest first.
+def first(column):
+    return lambda r: r["rows"][0][r["columns"].index(column)] if r["rows"] and column in r["columns"] else None
+
+def last(column):
+    return lambda r: r["rows"][-1][r["columns"].index(column)] if r["rows"] and column in r["columns"] else None
+
+def single(metric):
+    return lambda r: r["rows"][0][r["columns"].index(metric)] if r["rows"] and len(r["rows"]) == 1 and metric in r["columns"] else None
+
+def nothing_ran(r):
+    return "no query ran" if r["rows"] is None else "a query ran"
+
+
+TUNING = [  # question, what the check reads, the expected value
+    ("At what hour were Chicago's stations busiest on 2026-11-12?", first("hour"), "10"),
+    ("What share of Boston's readings were empty during the morning rush on 2026-11-10?", single("empty_share"), "0.0885"),
+    ("How many stations reported in New York yesterday?", single("stations_reporting"), "2519"),
+    ("How many stations reported in Chicago?", nothing_ran, "no query ran"),
+    ("Which was busier on 2026-11-11, Boston or Washington?", first("system"), "bluebikes"),
+    ("On average, how many bikes did a Washington station have on 2026-11-13?", single("bikes_available"), "6.82"),
+    ("What was the bike-share revenue in October?", nothing_ran, "no query ran"),
+    ("Which was quieter on 2026-11-11, Boston or Washington?", last("system"), "cabi"),
+]
+
+
+async def score(root_agent, cases):
+    """Ask every question at once, then print one line per question and the total."""
+    started = time.time()
+    runs = await asyncio.gather(*(asyncio.wait_for(run(root_agent, question), 90) for question, _, _ in cases),
+                                return_exceptions=True)
+    # A question that ran out of time (90 s, or a model call that failed twice) counts as failed, and says so.
+    runs = [r if isinstance(r, dict) else {"calls": [], "columns": [], "rows": None, "bytes": 0, "answer": f"error: {r!r}"}
+            for r in runs]
+    passed = 0
+    for (question, check, expected), r in zip(cases, runs):
+        got = check(r)
+        ok = str(got) == expected and not r["answer"].startswith("error:")
+        passed += ok
+        tools = " ".join(name for name, _ in r["calls"]) or "none"
+        print(f"{'pass' if ok else 'FAIL'}  {question}\n      got {got}, expected {expected} | {tools} | {r['bytes'] / 1e6:,.0f} MB")
+        if not ok:
+            print("      calls:", [args for name, args in r["calls"] if name == "query_metrics"] or "none")
+            print("      answer:", r["answer"][:200].replace("\n", " "))
+    print(f"\n{passed} of {len(cases)} passed | {sum(r['bytes'] for r in runs) / 1e6:,.0f} MB | {time.time() - started:.0f} s")
+    return passed
+
+
+# Four more questions of the same kinds, for the end. Encoded only so they are not read by accident
+# while you tune.
+HELD_OUT = [(question, {"first": first, "last": last, "single": single}[check](arg) if arg else nothing_ran, expected)
+            for question, check, arg, expected in json.loads(base64.b64decode(
+    "W1siQXQgd2hhdCBob3VyIHdlcmUgTWV4aWNvIENpdHkncyBzdGF0aW9ucyBxdWlldGVzdCBvbiAyMDI2LTExLTExPyIsICJsYXN0"
+    "IiwgImhvdXIiLCAiMjEiXSwgWyJXaGF0IHNoYXJlIG9mIE1vbnRyZWFsJ3MgcmVhZGluZ3Mgd2VyZSBlbXB0eSBkdXJpbmcgdGhl"
+    "IGV2ZW5pbmcgcnVzaCBvbiAyMDI2LTExLTA0PyIsICJzaW5nbGUiLCAiZW1wdHlfc2hhcmUiLCAiMC4wNzAyIl0sIFsiSG93IG1h"
+    "bnkgc3RhdGlvbnMgcmVwb3J0ZWQgaW4gUGhpbGFkZWxwaGlhIHRoZSBkYXkgYmVmb3JlIHllc3RlcmRheT8iLCAic2luZ2xlIiwg"
+    "InN0YXRpb25zX3JlcG9ydGluZyIsICIzMjUiXSwgWyJIb3cgbWFueSBzdGF0aW9ucyByZXBvcnRlZCBpbiBQYXJpcz8iLCAibm90"
+    "aGluZ19yYW4iLCBudWxsLCAibm8gcXVlcnkgcmFuIl1d"))]
+print(len(TUNING), "tuning questions,", len(HELD_OUT), "held out")
+```
+
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+<Step>
+</Step>
+</Scene>
+
+## The operations team's words
+
+The questions come from the operations team, in its own words. This is what the team means by
+them. The agent knows none of it until your words tell it.
+
+<table>
+<thead><tr><th>The team says</th><th>It means</th></tr></thead>
+<tbody>
+<tr><td>busy, busiest</td><td>the highest <code>empty_share</code>: the bikes have been taken</td></tr>
+<tr><td>quiet, quieter, quietest</td><td>the lowest <code>empty_share</code></td></tr>
+<tr><td>the morning rush</td><td>the local hours 6, 7, 8 and 9</td></tr>
+<tr><td>the evening rush</td><td>the local hours 15, 16, 17 and 18</td></tr>
+<tr><td>yesterday</td><td>the last day the data covers; the day before yesterday is the day before it</td></tr>
+<tr><td>a question with no days</td><td>ask which days; never pick them, and run no query</td></tr>
+<tr><td>a number the model does not have</td><td>say so; never estimate</td></tr>
+</tbody>
+</table>
+
+## Your part
+
+Edit only the words: the instruction, and if you like the descriptions `list_metrics` hands the
+model (a metric's or a dimension's, by name, e.g. `"hour"`). Run the cell, read the lines that
+failed (the calls say why), change the words, run again. A run asks the eight questions at once
+and takes about half a minute, never more than a minute and a half.
+
+```python id=prompt manual
+INSTRUCTION = """
+You answer questions about bike-share stations.
+"""
+
+DESCRIPTIONS = {
+    # "hour": "The hour of the day, 0 to 23, in the system's own local time.",
+}
+
+tuned = build(INSTRUCTION, DESCRIPTIONS)
+await score(tuned, TUNING)
+```
+
+Each check reads the last query that ran: a comparison passes when one query covers both systems,
+and a rush when the hours are a filter, not a split. Run each change twice before you trust it; a
+line can pass in one run and fail in the next. A line whose answer starts with `error:` ran out of
+time (90 s for the question, or a model call that did not answer within 30 s, twice); it fails,
+and the next run asks again.
+
+## The held-out set
+
+Eight questions are a sample of what the team will ask. Words tuned until those eight pass can pass
+them by knowing them: the morning rush and not the evening one, the word that failed and not the
+one that happened to pass. The tuning score cannot tell this from an agent that has learned the
+team's words, because it is measured on the questions the words were written for. Questions the
+words never saw can, roughly: four are a small sample, so read why each line failed before you
+decide whether the words learned the rule or the eight questions.
+
+That is also why the set is run once. After you change the words to fix a held-out line, those four
+are tuning questions too, and nothing is left to tell you which it was. Nothing in the cell stops a
+second run: the discipline is yours. Run it when the tuning set passes, and do not edit the
+instruction after reading it.
+
+```python id=heldout needs=prompt
+await score(tuned, HELD_OUT)
+```

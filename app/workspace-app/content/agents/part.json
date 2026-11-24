@@ -16,6 +16,7 @@
       "lessons": [
         "06-designing-tools",
         "06b-tools-on-the-database",
+        "19-hands-on-the-data-agent",
         "07-structured-outputs",
         "08-seeing-why-it-chose"
       ]
@@ -24,8 +25,7 @@
       "title": "The SQL agent",
       "lessons": [
         "16-system-prompt-for-sql",
-        "17-end-to-end-walkthrough",
-        "19-hands-on-the-data-agent"
+        "17-end-to-end-walkthrough"
       ]
     },
     {
@@ -45,11 +45,14 @@
       ]
     },
     {
-      "title": "Task 2 and evals",
+      "title": "Tasks and evals",
       "lessons": [
         "30a-task-2-the-warehouse-agent",
         "30b-task-2-deploy-the-agent",
-        "30-evals-and-observability"
+        "30-evals-and-observability",
+        "30c-task-3-tune-the-prompt",
+        "30d-task-4-design-the-tools",
+        "30e-task-5-calibrate-the-judge"
       ]
     },
     {

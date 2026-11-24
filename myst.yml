@@ -65,11 +65,11 @@ project:
       - file: materials/ai-agent-development/agents/04-the-loop-in-code.md
       - file: materials/ai-agent-development/agents/06-designing-tools.md
       - file: materials/ai-agent-development/agents/06b-tools-on-the-database.md
+      - file: materials/ai-agent-development/agents/19-hands-on-the-data-agent.md
       - file: materials/ai-agent-development/agents/07-structured-outputs.md
       - file: materials/ai-agent-development/agents/08-seeing-why-it-chose.md
       - file: materials/ai-agent-development/agents/16-system-prompt-for-sql.md
       - file: materials/ai-agent-development/agents/17-end-to-end-walkthrough.md
-      - file: materials/ai-agent-development/agents/19-hands-on-the-data-agent.md
       - file: materials/ai-agent-development/agents/19b-why-free-sql-is-not-production.md
       - file: materials/ai-agent-development/agents/25-guards.md
       - file: materials/ai-agent-development/agents/12-what-is-mcp.md
@@ -79,6 +79,9 @@ project:
       - file: materials/ai-agent-development/agents/30a-task-2-the-warehouse-agent.md
       - file: materials/ai-agent-development/agents/30b-task-2-deploy-the-agent.md
       - file: materials/ai-agent-development/agents/30-evals-and-observability.md
+      - file: materials/ai-agent-development/agents/30c-task-3-tune-the-prompt.md
+      - file: materials/ai-agent-development/agents/30d-task-4-design-the-tools.md
+      - file: materials/ai-agent-development/agents/30e-task-5-calibrate-the-judge.md
       - file: materials/ai-agent-development/agents/31b-from-proof-of-concept-to-production.md
       - file: materials/ai-agent-development/agents/28-patterns.md
       - file: materials/ai-agent-development/agents/26-embeddings.md
