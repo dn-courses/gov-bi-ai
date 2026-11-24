@@ -18,7 +18,8 @@ WORKDIR /app/workspace-app
 # (requirements-labs.txt, written by the build from each lab's pyproject.toml; absent on the
 # source tree).
 COPY workspace-app/requirements*.txt ./
-RUN for list in requirements*.txt; do uv pip install --no-cache -r "$list"; done
+# `set -e`: a list that fails to install (a download that times out) fails the build, not just that list.
+RUN set -e; for list in requirements*.txt; do uv pip install --no-cache -r "$list"; done
 
 # pnpm at the version package.json pins. Installed with npm because Corepack no longer ships with
 # Node from 25 on, so `corepack enable` would break on the next base-image bump.

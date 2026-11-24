@@ -37,7 +37,7 @@ const CSS = GCSS + `
 .lw .ag1 .roles .msg .by { grid-column:1; grid-row:2; margin:0; }
 .lw .ag1 .roles .msg .text { grid-column:2; grid-row:1 / span 2; }
 .lw .ag1 .roles .msg.sys .role { color:var(--ink); background:var(--cell); border:1px solid var(--line); }
-.lw .ag1 .nots { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; align-items:stretch; }
+.lw .ag1 .nots { display:grid; grid-template-columns:repeat(2, 1fr); gap:14px; align-items:stretch; }
 .lw .ag1 .nots .zone { display:grid; align-content:start; gap:8px; }
 .lw .ag1 .alone { margin-top:10px; padding:8px 12px; border-radius:8px; border-left:4px solid var(--hot); background:var(--hot-bg); font-size:14px; }
 .lw .ag1 .alone b { display:block; font:600 12px ui-monospace, Menlo, monospace; letter-spacing:.06em; text-transform:uppercase; color:var(--hot); }
@@ -56,7 +56,7 @@ const steps = [
   { stop: "The bill", title: "Every call pays for everything before it",
     note: `Each turn adds two messages and re-sends all the earlier ones. The SDK's <code>client.chats</code> keeps the list for you, in your process, and sends all of it on every call all the same.` },
   { stop: "Missing", title: "What the API does not have",
-    note: `Memory, your data, and a private notepad are not in the function. Whatever looks like one of them is code around the call, maintaining the list.` },
+    note: `Memory and your data are not in the function. Whatever looks like one of them is code around the call, maintaining the list.` },
 ];
 
 const kind = (who) => (who === "model" ? "model" : who === "user" ? "user" : who.startsWith("user") ? "fnresp" : "sys");
@@ -71,9 +71,8 @@ function bill() {
 
 const not = (cap, text) => zone(cap, `<p>${text}</p>`, "hot");
 const missing = () => `<div class="nots">
-    ${not("No memory", "Each call starts from the list you send. A name the user gave earlier exists only if it is in that list.")}
-    ${not("No data", "It cannot read a database, a file or the web. It can only be sent text.")}
-    ${not("No hidden state", "Nothing is kept between calls on the model's side. What it should know mid-task is in the list.")}</div>`;
+    ${not("No memory", "Nothing is kept between calls. A name the user gave earlier, or what it should know mid-task, exists only if it is in the list you send.")}
+    ${not("No data", "It cannot read a database, a file or the web. It can only be sent text.")}</div>`;
 
 function request(at, cfg) {
   if (at !== 3) return zone(`Request · <b>model = $GEMINI_MODEL</b>`, cfg + gstack(LIST, 1, at === 0 ? [0] : []), at === 0 ? "on" : "");
