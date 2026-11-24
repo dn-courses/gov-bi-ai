@@ -1,0 +1,114 @@
+export const meta = { title: "See It in the Console", minutes: 15, database: "shop", settings: {} };
+
+A lake is files in cheap storage, and an engine reads them when asked. Here is one you can open:
+one week of the bike-share readings, stored as Parquet in a Cloud Storage bucket, with a BigQuery
+table over it. Look at both sides in the Google Cloud console, then make BigQuery read it.
+
+Open [console.cloud.google.com](https://console.cloud.google.com) and sign in with **the Gmail address you registered with**.
+Every link below opens the project **BigQuery Lab** (`enjoytech-bq-lab`). You can look and run
+queries, but you cannot change anything. Follow the numbered arrows.
+
+## The files
+
+Open [the bucket](https://console.cloud.google.com/storage/browser/enjoytech-bq-lab-files/station_status?project=enjoytech-bq-lab).
+
+![The bucket enjoytech-bq-lab-files: the folder station_status holds one folder per day](/columnar-mpp/console/01-bucket-day-folders.jpg)
+
+Inside a day: 21 Parquet files, 64 MB together. Nothing else is stored anywhere. These files are the table.
+
+![One day's folder: Parquet files and their sizes](/columnar-mpp/console/02-one-day-parquet-files.jpg)
+
+## The table
+
+Open [BigQuery Studio](https://console.cloud.google.com/bigquery?project=enjoytech-bq-lab). In
+Explorer, open `enjoytech-bq-lab` → `gbfs` → `station_status_files`.
+
+The **Details** tab says where the data is: not in BigQuery but at a bucket path, as Parquet, with
+the `day=` folders read as partitions. This is an **external table**: BigQuery keeps only the pointer.
+
+![Details tab: External Data Configuration with the source URI, format and hive partitioning](/columnar-mpp/console/03-table-details-external-config.jpg)
+
+The **Schema** tab lists `day`, the partition column. It is in no file. BigQuery takes it from
+the folder name.
+
+![Schema tab: the day column](/columnar-mpp/console/04-table-schema-day-column.jpg)
+
+## Make it read: one day, then the week
+
+Run it here first:
+
+```bigquery
+SELECT system_id, AVG(num_bikes_available) AS bikes
+FROM `enjoytech-bq-lab.gbfs.station_status_files`
+WHERE day = '2026-10-12'
+GROUP BY system_id
+```
+
+Then in the console: click **+** for a new query, type the same query, and click **Run**. Before it
+runs, the console promises **0 B**. It cannot price files it has not opened, so the real number
+appears only after the run.
+
+![The query editor: Run, and the 0 B estimate](/columnar-mpp/console/05-query-editor-run.jpg)
+
+**Job information** shows what was billed:
+
+![Job information: 242 MB billed for one day](/columnar-mpp/console/06-one-day-job-information.jpg)
+
+**Execution details** shows what was read. Stage `S00: Input` read 14,443,077 records, which is
+one day's rows. Open the stage to see its steps: three columns, and the day filter
+(`equal($3, …)`). Only that day's folder was read.
+
+![Execution details: records read by the input stage](/columnar-mpp/console/07-one-day-execution-details.jpg)
+
+![The input stage's steps: three columns and the day filter](/columnar-mpp/console/08-one-day-stage-steps.jpg)
+
+Now put `-- ` in front of the `WHERE` line, here and in the console, and run again.
+
+![The whole week: 1.64 GB billed](/columnar-mpp/console/09-whole-week-job-information.jpg)
+
+![The whole week: 100,311,561 records read, no filter](/columnar-mpp/console/10-whole-week-stage-steps.jpg)
+
+Under each result here, the app prints the same job's stages. Look at `parallel inputs`: 21 for
+the day, which has 21 files, and 142 for the week, which has 142. BigQuery fetches a lake **one input
+per file**, read side by side, and a file it does not need is never an input.
+
+<table>
+  <thead><tr><th></th><th>one day</th><th>the week</th></tr></thead>
+  <tbody>
+    <tr><td>files read (<code>parallel inputs</code>)</td><td>21</td><td>142</td></tr>
+    <tr><td>records read</td><td>14,443,077</td><td>100,311,561</td></tr>
+    <tr><td>billed (console)</td><td>242 MB</td><td>1.64 GB</td></tr>
+  </tbody>
+</table>
+
+Seven folders, about seven times the bill. The filter on the partition column is what kept the other six unopened.
+
+## 64 MB of files, 242 MB billed
+
+The bill does not count file bytes. It counts the **uncompressed size of the columns the query
+reads**: a STRING is 2 bytes plus its length, an INT64 is 8 bytes, and NULL is nothing. Measure
+it for that day:
+
+```bigquery
+SELECT
+  SUM(2 + LENGTH(system_id))                  AS system_id_bytes,
+  COUNT(num_bikes_available) * 8              AS bikes_bytes,
+  SUM(2 + LENGTH(system_id)) + COUNT(num_bikes_available) * 8 AS total_bytes
+FROM `enjoytech-bq-lab.gbfs.station_status_files`
+WHERE day = '2026-10-12'
+```
+
+<table>
+  <thead><tr><th>column</th><th>counted as</th><th>bytes</th></tr></thead>
+  <tbody>
+    <tr><td><code>system_id</code></td><td>2 + length, per row</td><td>148,797,044</td></tr>
+    <tr><td><code>num_bikes_available</code></td><td>8 per value that is not NULL</td><td>104,778,672</td></tr>
+    <tr><td><code>day</code></td><td>the folder name</td><td>0</td></tr>
+    <tr><td><strong>total</strong></td><td></td><td><strong>253,575,716 = 241.83 MiB</strong></td></tr>
+  </tbody>
+</table>
+
+The app prints it as 253.6 MB (millions of bytes). The console prints 242 "MB", which is
+really MiB. Same bytes, two units. The 64 MB on disk holds every column of the
+day, encoded and compressed. The bill is for the values after they are unpacked, and only for the
+columns the query names.

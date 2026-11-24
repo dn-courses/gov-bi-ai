@@ -4,19 +4,33 @@
   "groups": [
     {
       "title": "Foundations",
-      "lessons": ["01-disk-memory-cpu"]
+      "lessons": [
+        "01-disk-memory-cpu"
+      ]
     },
     {
       "title": "Storage",
-      "lessons": ["02-rows-and-columns", "03-encoding-and-compression", "04-statistics-and-skipping", "05-partitioning"]
+      "lessons": [
+        "02-rows-and-columns",
+        "03-encoding-and-compression",
+        "04-statistics-and-skipping",
+        "05-partitioning"
+      ]
     },
     {
       "title": "Compute",
-      "lessons": ["06-vectorized-execution", "07-mpp", "08-cost-and-comparison"]
+      "lessons": [
+        "06-vectorized-execution",
+        "07-mpp",
+        "08-cost-and-comparison"
+      ]
     },
     {
       "title": "Hands-on",
-      "lessons": ["09-task-choose-the-store"]
+      "lessons": [
+        "09-task-choose-the-store",
+        "10-see-it-in-the-console"
+      ]
     }
   ]
 }

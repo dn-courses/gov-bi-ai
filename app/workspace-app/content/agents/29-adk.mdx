@@ -95,6 +95,7 @@ def run_sql(query: str) -> dict:
 root_agent = Agent(
     name="adk_sql_agent",
     model=os.environ["GEMINI_MODEL"],
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},  # a call that hangs fails after 30 s, retried once
     description="Answers questions about the Pagila DVD-rental database with SQL.",
     instruction=("You answer questions about the Pagila DVD-rental database. Find tables and columns "
                  "with the tools, then query with run_sql. State exact numbers from the result."),
@@ -207,6 +208,7 @@ SERVER = StdioServerParameters(command=sys.executable, args=[str(pathlib.Path(__
 root_agent = Agent(
     name="adk_sql_agent_mcp",
     model=os.environ["GEMINI_MODEL"],
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},  # a call that hangs fails after 30 s, retried once
     instruction=("You answer questions about the Pagila DVD-rental database. Find tables and columns "
                  "with the tools, then query with run_sql. State exact numbers from the result."),
     # errlog: where the server's own log goes (the cells capture stderr; this is the real one)

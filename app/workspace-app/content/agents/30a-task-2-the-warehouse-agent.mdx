@@ -293,6 +293,7 @@ def query_metrics(metrics: list[str], dimensions: list[str], first_day: str, las
 root_agent = Agent(
     name="warehouse_agent",
     model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},  # a call that hangs fails after 30 s, retried once
     instruction="",  # yours: what it answers, where numbers come from, days, refusals, bytes
     tools=[list_metrics, query_metrics],
 )

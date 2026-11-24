@@ -144,7 +144,7 @@ counted by Gemini's own tokenizer:
 from google import genai
 from google.genai import types
 
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 MODEL = os.environ["GEMINI_MODEL"]
 
 capped = json.dumps(run_sql("SELECT * FROM rental"))

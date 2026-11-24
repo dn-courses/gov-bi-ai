@@ -53,6 +53,7 @@ project:
       - file: materials/data-in-the-cloud/columnar-mpp/07-mpp.md
       - file: materials/data-in-the-cloud/columnar-mpp/08-cost-and-comparison.md
       - file: materials/data-in-the-cloud/columnar-mpp/09-task-choose-the-store.md
+      - file: materials/data-in-the-cloud/columnar-mpp/10-see-it-in-the-console.md
   - title: AI Agent Development
     children:
     - file: materials/ai-agent-development/agents/README.md

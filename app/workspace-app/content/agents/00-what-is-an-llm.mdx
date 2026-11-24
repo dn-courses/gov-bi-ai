@@ -14,7 +14,7 @@ import os
 
 from google import genai
 
-client = genai.Client()  # Vertex AI: project and location come from the environment
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # Vertex AI from the environment; a hung call fails after 30 s
 MODEL = os.environ["GEMINI_MODEL"]
 
 for text in ["The customer who has spent the most is", "film", "film_category", "KARL SEAL", "BUCKET BROTHERHOOD"]:

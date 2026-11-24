@@ -29,7 +29,7 @@ from pgvector.psycopg import register_vector
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 DB = os.environ["DATABASE_URL"]
 SQL_URL = DB.replace("postgres:postgres@", "agent_ro:agent_ro@")      # read-only role
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 
 
 def run_sql(query: str) -> dict:
@@ -62,18 +62,21 @@ def search_policies(query: str) -> dict:
 
 sql_agent = Agent(
     name="sql_agent", model=MODEL,
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},
     description="Answers questions about the rental data: films, customers, rentals, payments, stores.",
     instruction="You query the Pagila PostgreSQL database. Describe a table before writing SQL on it. Answer from the rows only.",
     tools=[describe_table, run_sql])
 
 docs_agent = Agent(
     name="docs_agent", model=MODEL,
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},
     description="Answers questions about Pagila Video's rules and policies: fees, refunds, opening hours, membership.",
     instruction="You answer from the policy documents only, and quote the passage you used. If they do not say, say so.",
     tools=[search_policies])
 
 root_agent = Agent(
     name="front_desk", model=MODEL,
+    generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},
     description="The front desk of Pagila Video.",
     instruction="Hand every question to the specialist whose description fits it. Do not answer yourself.",
     sub_agents=[sql_agent, docs_agent])
@@ -90,7 +93,7 @@ with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
     register_vector(conn)
     todo = conn.execute("SELECT id, body FROM docs WHERE embedding IS NULL ORDER BY id").fetchall()
     if todo:
-        reply = genai.Client().models.embed_content(model="gemini-embedding-001", contents=[b for _, b in todo],
+        reply = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}}).models.embed_content(model="gemini-embedding-001", contents=[b for _, b in todo],
             config=types.EmbedContentConfig(output_dimensionality=1536, task_type="RETRIEVAL_DOCUMENT"))
         for (doc_id, _), e in zip(todo, reply.embeddings):
             v = np.array(e.values, dtype=np.float32)
@@ -151,6 +154,7 @@ from google.adk.agents import Agent
 from google.adk.tools.agent_tool import AgentTool
 
 desk = Agent(name="front_desk_tools", model=team.MODEL, description="The front desk of Pagila Video.",
+             generate_content_config={"http_options": {"timeout": 30_000, "retry_options": {"attempts": 2}}},
              instruction="Ask the specialists for what you need, then answer the person yourself.",
              tools=[AgentTool(agent=team.sql_agent.clone()), AgentTool(agent=team.docs_agent.clone())])
 await chat(desk, ["What is the late fee, and how many rentals have not been returned yet?"])

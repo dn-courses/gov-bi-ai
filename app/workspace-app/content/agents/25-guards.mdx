@@ -13,7 +13,7 @@ import os, psycopg
 from google import genai
 from google.genai import types
 
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 MODEL = os.environ["GEMINI_MODEL"]
 SHOP_URL = os.environ.get("SHOP_URL", "postgresql://analyst_ro:analyst_ro@postgres:5432/shop")
 QUESTION = "What are the three best-selling products in the Tools category by units, with their names?"

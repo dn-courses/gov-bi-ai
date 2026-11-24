@@ -14,7 +14,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 MODEL = os.environ["GEMINI_MODEL"]
 DB = os.environ["DATABASE_URL"].replace("postgres:postgres@", "agent_ro:agent_ro@")
 

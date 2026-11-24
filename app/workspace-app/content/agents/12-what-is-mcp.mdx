@@ -196,7 +196,7 @@ for declaration in await catalog():
 The loop, with one change: a tool call goes to the server as `tools/call`. This cell calls the model.
 
 ```python
-client = genai.Client()
+client = genai.Client(http_options={"timeout": 30_000, "retry_options": {"attempts": 2}})  # a call that hangs fails after 30 s, retried once
 MODEL = os.environ["GEMINI_MODEL"]
 SYSTEM = ("You answer questions about the Pagila DVD-rental database. Find tables and columns with the "
           "tools, then query with run_sql. State exact numbers from the result.")

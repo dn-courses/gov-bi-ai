@@ -60,6 +60,7 @@
     "columnar-mpp/07-mpp": "postgres",
     "columnar-mpp/08-cost-and-comparison": "postgres",
     "columnar-mpp/09-task-choose-the-store": "postgres",
+    "columnar-mpp/10-see-it-in-the-console": "postgres",
     "agents/00-what-is-an-llm": "agents",
     "agents/01-llm-as-api": "agents",
     "agents/02-from-completion-to-agent": "agents",

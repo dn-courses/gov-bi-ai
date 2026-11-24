@@ -1,6 +1,6 @@
 {
   "course": "gov-bi-ai",
-  "master_sha": "09220d78ddca6f3f0a444383347a127204be7687",
+  "master_sha": "9845ea151b48d4f50a62a31562cf4734701f6183",
   "modules": {
     "docker": {
       "effective_level": "minimal",
@@ -24,7 +24,7 @@
     },
     "columnar-mpp": {
       "effective_level": "moderate",
-      "content_hash": "0040b8363ad7837e4a1c238ef42e3c3b0799f340fa58bfaf1ec304ae59da807f"
+      "content_hash": "6cf1d068568733c43c1d3af5a08cb0ade3aefbcac54f8593717c42f80acd794c"
     },
     "agents": {
       "effective_level": "advanced",
