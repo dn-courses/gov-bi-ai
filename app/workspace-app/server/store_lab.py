@@ -5,8 +5,8 @@ CREATE [OR REPLACE] TABLE or DROP TABLE whose table is named bare (`w4`, or `{sa
 participant's own dataset (`enjoytech-bq-lab.sandbox_p07.w4`), and the shared tables named bare
 (`lab_station_status`, `station_status_partitioned`) get their full names. A name that already has a
 dataset is left alone. The dataset comes from the key's `client_email`: student-p07 owns sandbox_p07.
-`measure_runner.py` (the page's Measure buttons) runs its queries through `run_job`, and the page's
-clean-up cell calls `clean_up`.
+`measure_runner.py` (the page's Measure buttons) runs its queries through `run_job` and its Reset
+buttons through `reset`, and the page's clean-up cell calls `clean_up`.
 """
 
 import functools
@@ -140,23 +140,52 @@ def made_text(job: Any) -> str:
     )
 
 
-def drop_indexes(keep_mine: bool) -> list[str]:
-    """Drop station_status's indexes: all but the participant's (ho_…), or only those."""
+LAB_INDEX = "station_status_station_time"  # page 02's index: a hint the hands-on removes
+
+
+def tag_of(workload: str) -> str:
+    """What the workload's cell puts in front of each index it builds (store-cells.ts)."""
+    return f"hx_{workload.lower()}__"
+
+
+def like(prefix: str) -> str:
+    """A LIKE pattern for the index names that start with `prefix` (`_` matched as itself)."""
+    return prefix.replace("_", "!_") + "%"
+
+
+def drop_indexes(prefix: str = "hx_") -> list[str]:
+    """Drop station_status's indexes whose names start with `prefix`: the exercise cells' (hx_…)."""
     import psycopg
 
-    mine = "NOT LIKE" if keep_mine else "LIKE"
     find = "SELECT indexname FROM pg_indexes WHERE tablename = 'station_status' AND indexname "
-    find += f"{mine} 'ho!_%' ESCAPE '!'"
+    find += "LIKE %s ESCAPE '!'"
     with psycopg.connect(autocommit=True) as conn:
-        names = [name for (name,) in conn.execute(find).fetchall()]
+        names = [name for (name,) in conn.execute(find, [like(prefix)]).fetchall()]
         for name in names:
             conn.execute(f'DROP INDEX "{name}"')
     return names
 
 
+def reset(workload: str, on_pg: bool) -> str:
+    """One workload back to its start: every index its cell built (hx_w4__…) and its table w4.
+    Says what went."""
+    name = workload.lower()
+    said = []
+    if on_pg:
+        gone = [index.removeprefix(tag_of(name)) for index in drop_indexes(tag_of(name))]
+        said.append(f"indexes dropped: {', '.join(gone)}" if gone else "no index to drop")
+    try:
+        client, sandbox = lab()
+    except RuntimeError:  # BigQuery not connected: there is no table to drop
+        return "; ".join(said)
+    client.delete_table(f"{PROJECT}.{sandbox}.{name}", not_found_ok=True)
+    return "; ".join([*said, f"your table {sandbox}.{name} dropped if you had one"])
+
+
 def clean_up() -> None:
-    """Remove what the hands-on built: the ho_… indexes, and the tables w1 … w8 of the own dataset."""
-    print(f"dropped {len(drop_indexes(keep_mine=False))} index(es)")
+    """Remove what the hands-on built: the exercise cells' indexes, and the tables w1 … w8 of the own
+    dataset."""
+    print(f"dropped {len(drop_indexes())} index(es)")
     client, sandbox = lab()
     tables = [t for t in client.list_tables(f"{PROJECT}.{sandbox}") if OWN_TABLE.fullmatch(t.table_id)]
     for table in tables:

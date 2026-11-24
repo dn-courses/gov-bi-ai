@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { type CellSpec, before, broken, readCells, readMetas } from "./cells";
 import { pythonSession } from "./python";
 import { resetCells, runBatch, runCell } from "./sql";
+import { dropsBefore, exerciseOf, indexesOf, tagIndexes, untag } from "./store-cells";
 
 const WORK = process.env.WORKSPACE_DIR ?? "/tmp/workspace";
 mkdirSync(WORK, { recursive: true });
@@ -45,7 +46,20 @@ const app = new Hono();
 type Where = { database: string; settings: Record<string, string> };
 type Answer = { out: string; error: string | null };
 
-const runLang = (lang: string, code: string, { database, settings }: Where): Promise<Answer> | null => {
+// An exercise cell of "Choose the Store" (w4-pg): its indexes carry the workload's tag, and the
+// workload's indexes it no longer names are dropped first (store-cells.ts).
+async function runExercise(workload: string, code: string, { database, settings }: Where): Promise<Answer> {
+  const { sql, creates } = tagIndexes(code, workload);
+  const [found] = await runBatch([indexesOf(workload)], { autocommit: true, dbname: database });
+  const drops = dropsBefore((found ?? []).map(([name]) => String(name)), creates);
+  const answer = await runCell(drops ? `${drops};\n${sql}` : sql, database, settings);
+  return { out: untag(answer.out) ?? "", error: untag(answer.error) };
+}
+
+const runLang = (lang: string, code: string, where: Where, cellId?: string | null): Promise<Answer> | null => {
+  const { database, settings } = where;
+  const workload = lang === "sql" ? exerciseOf(cellId ?? undefined) : null;
+  if (workload) return runExercise(workload, code, where);
   if (lang === "sql") return runCell(code, database, settings);
   if (lang === "python") return python.run(code);
   if (lang === "duckdb") return duck.run(code);
@@ -62,7 +76,7 @@ const label = (need: CellSpec, from: CellSpec) =>
 async function catchUp(cell: CellSpec, where: Where): Promise<{ first: string[]; error: string | null }> {
   const first: string[] = [];
   for (const need of before(CELLS, cell).filter((c) => !ran.has(c.key))) {
-    const answer = await runLang(need.lang, need.code, where);
+    const answer = await runLang(need.lang, need.code, where, need.id);
     if (answer?.error && need.expect !== "error")
       return { first, error: `This cell needs ${label(need, cell)} to run first, and that failed:\n${answer.error}` };
     ran.add(need.key);
@@ -84,7 +98,7 @@ app.post("/api/cell", async (c) => {
   const caught = cell ? await catchUp(cell, { database, settings }) : { first: [], error: null };
   if (caught.error) return c.json({ out: "", error: caught.error, ms: 0, first: caught.first });
   const dry = lang === "bigquery" && mode === "dry" && !/^\s*-- dry run/.test(code);
-  const work = runLang(lang, dry ? `-- dry run\n${code}` : code, { database, settings });
+  const work = runLang(lang, dry ? `-- dry run\n${code}` : code, { database, settings }, cell?.id);
   if (!work) return c.json({ out: "", error: `No runner for ${lang} cells.`, ms: 0 }, 400);
   const answer = await timed(work);
   if (cell && (!answer.error || cell.expect === "error")) ran.add(cell.key);
@@ -93,10 +107,10 @@ app.post("/api/cell", async (c) => {
 
 // A page's Measure button: one workload's fixed query on one store (measure_runner.py). Answers
 // with the three tiles, what was measured and the participant's best so far (`look`: only that,
-// without measuring), or with `error` in words the button can show.
+// without measuring; `reset`: the workload back to its start), or with `error` in words the button can show.
 app.post("/api/measure", async (c) => {
-  const { workload, store, look = false } = await c.req.json();
-  const { out, error, ms } = await timed(measure.run(JSON.stringify({ workload, store, look })));
+  const { workload, store = "", look = false, reset = false } = await c.req.json();
+  const { out, error, ms } = await timed(measure.run(JSON.stringify({ workload, store, look, reset })));
   return c.json(error ? { error, ms } : { ...JSON.parse(out), ms });
 });
 

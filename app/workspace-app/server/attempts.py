@@ -40,3 +40,9 @@ def record(file: Path, key: str, attempt: dict[str, Any]) -> dict[str, Any] | No
     everything[key] = entry
     file.write_text(json.dumps(everything, indent=1))
     return view(entry)
+
+
+def forget(file: Path, prefix: str) -> None:
+    """The Reset button: every entry whose key starts with `prefix` (`W3/`) is gone."""
+    everything = {key: entry for key, entry in load(file).items() if not key.startswith(prefix)}
+    file.write_text(json.dumps(everything, indent=1))

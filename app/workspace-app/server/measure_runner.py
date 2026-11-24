@@ -11,26 +11,33 @@ on that store, with what they had built for it and how many they made (attempts.
 page shows the same text.
 
 PostgreSQL: the query under EXPLAIN (ANALYZE, BUFFERS), three times in a transaction that is rolled
-back; data read is page visits × 8 kB. Before it, every index of station_status that is not the
-participant's (ho_…) is dropped: the exercise starts from a table with no index. W6 to W8 run on the
-real capture, which is not on PostgreSQL: they have a BigQuery button only.
+back; data read is page visits × 8 kB. Only the workload's own indexes count: those its cell built,
+which carry its tag (`hx_w4__…`, store-cells.ts). Every other index of station_status is dropped
+inside that transaction, so it is back afterwards and one exercise's index never helps or slows
+another; the drops are not in the latency, which is the query's own execution time. The lab's index
+from an earlier page (a hint) is dropped for good. W6 to W8 run on the real capture, which is not on
+PostgreSQL: a BigQuery button only.
 BigQuery: the query on the participant's table for that workload (`w4`) when there is one, else on
 the shared table; one real run, cache off. Above the price limit (bq_guard.py) it is not run: the
 tiles are the dry run's bytes and price, and the latency says "too expensive to run".
 A measurement asked again while nothing changed (the same indexes; the same table, not modified) is
-answered from the cache with the first run's numbers, and says so.
+answered from the cache with the first run's numbers, and says so. `"reset": true` puts one
+workload back to its start: its indexes and its table dropped, its cached answers and its best
+so far forgotten.
 """
 
 import functools
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import attempts
+import store_lab
 from bq_guard import FROM_CACHE, MAX_DOLLARS, Cache, TooExpensive, cached, dollars
-from store_lab import PROJECT, SHARED, drop_indexes, lab, run_job, size_text, time_text
+from store_lab import PROJECT, SHARED, lab, like, run_job, size_text, time_text
 
 PAGE_BYTES = 8192
 # Cloud SQL for PostgreSQL, Enterprise, Iowa, one zone, on demand: $0.0413 a vCPU-hour, $0.007 a
@@ -40,7 +47,9 @@ SERVER_A_MONTH = MACHINE_A_MONTH + 20 * 0.17  # with 20 GiB of disk: the lab tab
 RENT = "the server's rent, however many runs"
 WEEK = "captured_at >= '2026-10-12' AND captured_at < '2026-10-19'"
 CAPTURE = "station_status_partitioned"
-INDEXES = "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'station_status' ORDER BY 1"
+ON_TABLE = "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'station_status' AND indexname "
+INDEXES = ON_TABLE + "LIKE %s ESCAPE '!' ORDER BY 1"  # the workload's own
+OTHERS = ON_TABLE + "NOT LIKE %s ESCAPE '!'"
 NOT_RUN = 1e9  # added to the score of a measurement that was priced and not run: any real run beats it
 CACHE: Cache = {}  # (workload, store) -> (the state it was measured in, the answer)
 
@@ -120,20 +129,34 @@ def explain(cursor: Any, sql: str) -> tuple[int, float]:
     return top["Plan"]["Shared Hit Blocks"] + top["Plan"]["Shared Read Blocks"], top["Execution Time"] / 1000
 
 
-def pg_state() -> tuple[Any, ...]:
-    """What a PostgreSQL measurement depends on: the table's indexes, once only the participant's are left."""
+def own_indexes(workload: str) -> str:
+    """The LIKE pattern of one workload's indexes: those its cell built, hx_w4__…"""
+    return like(store_lab.tag_of(workload))
+
+
+def shown(definition: str) -> str:
+    """An index as the participant wrote it: without the tag, the schema and the default method."""
+    plain = re.sub(r"hx_w[1-8]__", "", definition).replace(" ON public.", " ON ")
+    return plain.replace(" USING btree ", " ")
+
+
+def pg_state(workload: str) -> tuple[Any, ...]:
+    """What a PostgreSQL measurement depends on: the workload's own indexes."""
     import psycopg
 
-    drop_indexes(keep_mine=True)
-    with psycopg.connect() as conn:
-        return tuple(conn.execute(INDEXES).fetchall())
+    with psycopg.connect(autocommit=True) as conn:
+        conn.execute(f"DROP INDEX IF EXISTS {store_lab.LAB_INDEX}")
+        return tuple(conn.execute(INDEXES, [own_indexes(workload)]).fetchall())
 
 
-def measure_pg(work: Workload) -> dict[str, Any]:
+def measure_pg(workload: str, work: Workload) -> dict[str, Any]:
     import psycopg
 
+    mine = own_indexes(workload)
     with psycopg.connect() as conn, conn.cursor() as cursor:
-        indexes = cursor.execute(INDEXES).fetchall()
+        for name, _ in cursor.execute(OTHERS, [mine]).fetchall():
+            cursor.execute(f'DROP INDEX "{name}"')  # another workload's: back at the rollback below
+        indexes = cursor.execute(INDEXES, [mine]).fetchall()
         took = [explain(cursor, work.pg or "") for _ in range(3)]
         conn.rollback()
     pages, seconds = took[-1][0], statistics.median(seconds for _, seconds in took)
@@ -142,9 +165,10 @@ def measure_pg(work: Workload) -> dict[str, Any]:
         ["latency", time_text(seconds), "median of 3 runs"],
         ["cost a month", f"${SERVER_A_MONTH:,.2f}", RENT],
     ]
-    have = f"with your indexes: {', '.join(name for name, _ in indexes)}" if indexes else "with no index"
+    names = ", ".join(shown(name) for name, _ in indexes)
+    have = f"with the indexes of this exercise's cell: {names}" if indexes else "with no index"
     on = f"Measured on station_status, {have}. Nothing was changed."
-    what = [definition for _, definition in indexes] or ["no index"]
+    what = [shown(definition) for _, definition in indexes] or ["no index"]
     return {"tiles": tiles, "on": on, "what": what, "score": [seconds, pages]}
 
 
@@ -220,16 +244,34 @@ def measure_bq(name: str, work: Workload) -> dict[str, Any]:
     return {"tiles": tiles, "on": f"Measured on {said}.", "what": what, "score": [dollars(billed), seconds]}
 
 
+def reset_workload(workload: str, cache: Cache, file: Path) -> dict[str, Any]:
+    """The Reset button: the workload as it was before anything was built for it."""
+    gone = store_lab.reset(workload, on_pg=WORKLOADS[workload].pg is not None)
+    for store in ("pg", "bq"):
+        cache.pop(f"{workload}/{store}", None)
+    attempts.forget(file, f"{workload}/")
+    return {"reset": f"{workload} is back to its start: {gone}. Its cached answers and its best are cleared."}
+
+
 def measure(
-    workload: str, store: str, look: bool = False, cache: Cache = CACHE, file: Path = attempts.FILE
+    workload: str,
+    store: str = "",
+    look: bool = False,
+    reset: bool = False,
+    cache: Cache = CACHE,
+    file: Path = attempts.FILE,
 ) -> Any:
     work, key = WORKLOADS[workload], f"{workload}/{store}"
+    if reset:
+        return reset_workload(workload, cache, file)
     if look:
         return {"best": attempts.look(file, key)}
     if store == "pg" and work.pg is None:
         raise RuntimeError(f"{workload} runs on the real capture, which is not on PostgreSQL.")
     if store == "pg":
-        answer, hit = cached(cache, key, pg_state, lambda: measure_pg(work))
+        answer, hit = cached(
+            cache, key, functools.partial(pg_state, workload), lambda: measure_pg(workload, work)
+        )
     else:
         answer, hit = cached(
             cache, key, functools.partial(bq_state, workload), lambda: measure_bq(workload, work)

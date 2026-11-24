@@ -24,7 +24,10 @@ The columns of both tables: `station_id`, `system_id`, `captured_at`, `bikes_ava
 
 Every workload shows its query, then two cells and two buttons.
 
-- **The PostgreSQL cell** is plain SQL: the index you choose. Start its name with `ho_`.
+- **The PostgreSQL cell** is plain SQL: the indexes you choose, named as you like. The cell decides
+  what its workload has: run it again with a different index and the one it no longer names is
+  dropped. A workload is measured only with the indexes its own cell built, so one workload's
+  index never helps or slows another's.
 - **The BigQuery cell** builds your own copy of the table, laid out as you choose. Name the table
   after the workload (`w4`) and the shared table simply `lab_station_status`: the table is created
   in your own dataset, and the cell prints what building it took. A copy should **name its
@@ -35,6 +38,8 @@ Every workload shows its query, then two cells and two buttons.
   BigQuery the query runs on your table for that workload when you have built it, and on the shared
   table when you have not. Press them before you build anything, and again after. Asked again
   while nothing has changed, a button answers from the cache.
+- **Reset** puts the workload back to its start: the indexes its cell built and its BigQuery table
+  are dropped, and its best so far is cleared.
 - **Your best so far** appears under each button: the three numbers of your best measurement on
   that store, what you had built for it, and how many attempts you made. On BigQuery the best is
   the cheapest, on PostgreSQL the fastest.
@@ -70,8 +75,8 @@ GROUP BY hour ORDER BY hour
 On PostgreSQL, an index that starts with the day and then the system:
 
 ```sql id=w3-pg
-DROP INDEX IF EXISTS ho_w3;
-CREATE INDEX ho_w3 ON station_status (captured_at, system_id);
+DROP INDEX IF EXISTS by_day_system;
+CREATE INDEX by_day_system ON station_status (captured_at, system_id);
 ```
 
 On BigQuery, a copy partitioned by day:
@@ -91,7 +96,7 @@ What the buttons gave on one lab, before the two cells ran and after:
   <thead><tr><th></th><th>data read</th><th>latency</th><th>cost a month</th></tr></thead>
   <tbody>
     <tr><td>PostgreSQL, no index</td><td>5.93 GB, the whole table</td><td>about 0.4–0.7 s</td><td>$205.76</td></tr>
-    <tr><td>PostgreSQL, <code>ho_w3</code></td><td>14.87 MB</td><td>about 5–8 ms</td><td>$205.76</td></tr>
+    <tr><td>PostgreSQL, <code>by_day_system</code></td><td>14.87 MB</td><td>about 5–8 ms</td><td>$205.76</td></tr>
     <tr><td>BigQuery, the shared table</td><td>507 MB</td><td>about 0.3–0.5 s</td><td>$13.30</td></tr>
     <tr><td>BigQuery, <code>w3</code></td><td>10 MB, the minimum</td><td>about 0.2–0.6 s</td><td>$0.26</td></tr>
   </tbody>
@@ -106,9 +111,6 @@ and PostgreSQL on latency, and neither reads more than a few megabytes.
 For each workload: press both buttons, decide what to build on each store, build it, and press
 again. About 35 minutes for W1, W2, W4 and W5,
 10 for W6 to W8, and 15 for the final question.
-
-An index or a table you built for one workload is still there for the next. To remove an index:
-`DROP INDEX ho_w1;` in a PostgreSQL cell.
 
 ### W1 · The latest status of one station · 100,000 runs a month
 
@@ -125,8 +127,8 @@ WHERE station_id = 6 ORDER BY captured_at DESC LIMIT 1
 ```
 
 ```sql id=w1-pg manual
-DROP INDEX IF EXISTS ho_w1;
-CREATE INDEX ho_w1 ON station_status (...);
+DROP INDEX IF EXISTS my_index;
+CREATE INDEX my_index ON station_status (...);
 ```
 
 ```bigquery id=w1-bq manual
@@ -153,8 +155,8 @@ WHERE station_id = 6 AND captured_at = '2026-08-15 12:00:00+00'
 ```
 
 ```sql id=w2-pg manual
-DROP INDEX IF EXISTS ho_w2;
-CREATE INDEX ho_w2 ON station_status (...);
+DROP INDEX IF EXISTS my_index;
+CREATE INDEX my_index ON station_status (...);
 ```
 
 ```bigquery id=w2-bq manual
@@ -182,8 +184,8 @@ WHERE station_id = 6 GROUP BY hour ORDER BY hour
 ```
 
 ```sql id=w4-pg manual
-DROP INDEX IF EXISTS ho_w4;
-CREATE INDEX ho_w4 ON station_status (...);
+DROP INDEX IF EXISTS my_index;
+CREATE INDEX my_index ON station_status (...);
 ```
 
 ```bigquery id=w4-bq manual
@@ -209,8 +211,8 @@ FROM lab_station_status GROUP BY month, system_id ORDER BY month, system_id
 ```
 
 ```sql id=w5-pg manual
-DROP INDEX IF EXISTS ho_w5;
-CREATE INDEX ho_w5 ON station_status (...);
+DROP INDEX IF EXISTS my_index;
+CREATE INDEX my_index ON station_status (...);
 ```
 
 ```bigquery id=w5-bq manual
@@ -351,7 +353,7 @@ Points for the room:
 
 ## Clean up
 
-Remove your indexes (every name that starts with `ho_`) and your tables `w1` to `w8`.
+Remove the indexes your exercise cells built and your tables `w1` to `w8`.
 
 ```python id=clean-up standalone
 from store_lab import clean_up

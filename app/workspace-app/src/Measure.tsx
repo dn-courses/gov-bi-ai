@@ -1,23 +1,32 @@
 // A page's Measure button: runs one workload's fixed query on one store and shows three numbers —
 // data read, latency, cost a month — and, under them, the participant's best measurement so far
 // with what they had built for it. `<Measure workload="W4" store="pg" />` is one button; with no
-// `store` it is both stores side by side. The server measures and remembers (POST /api/measure).
+// `store` it is both stores side by side, with a Reset button under them: the workload's indexes and
+// table dropped, its cache and its best forgotten. The server measures and remembers (POST /api/measure).
 import { useEffect, useState } from "react";
 import { Play } from "./icons";
 
 type Store = "pg" | "bq";
 type Tile = [label: string, value: string, under: string];
 type Best = { tiles: Tile[]; what: string[]; attempts: number };
-type Measured = { tiles?: Tile[]; on?: string; cached?: string; best?: Best | null; error?: string; ms?: number };
+type Measured = {
+  tiles?: Tile[];
+  on?: string;
+  cached?: string;
+  best?: Best | null;
+  reset?: string;
+  error?: string;
+  ms?: number;
+};
 
 const NAME: Record<Store, string> = { pg: "PostgreSQL", bq: "BigQuery" };
 
-async function ask(workload: string, store: Store, look = false): Promise<Measured> {
+async function ask(workload: string, store: Store | "", how: { look?: boolean; reset?: boolean } = {}): Promise<Measured> {
   try {
     const res = await fetch("/api/measure", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workload, store, look }),
+      body: JSON.stringify({ workload, store, ...how }),
     });
     return (await res.json()) as Measured;
   } catch (e) {
@@ -55,7 +64,7 @@ function One({ workload, store }: { workload: string; store: Store }) {
   const [best, setBest] = useState<Best | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    void ask(workload, store, true).then((found) => setBest(found.best ?? null));
+    void ask(workload, store, { look: true }).then((found) => setBest(found.best ?? null));
   }, [workload, store]);
   const run = async () => {
     setBusy(true);
@@ -83,13 +92,40 @@ function One({ workload, store }: { workload: string; store: Store }) {
   );
 }
 
+function Reset({ workload, onDone }: { workload: string; onDone: (said: Measured) => void }) {
+  const [busy, setBusy] = useState(false);
+  const reset = async () => {
+    if (!window.confirm(`Reset ${workload}? Its indexes, its table and its best so far are removed.`)) return;
+    setBusy(true);
+    onDone(await ask(workload, "", { reset: true }));
+    setBusy(false);
+  };
+  return (
+    <button type="button" className="measure-reset" onClick={reset} disabled={busy}>
+      {busy ? "Resetting…" : `Reset ${workload}`}
+    </button>
+  );
+}
+
 export function Measure({ workload, store }: { workload: string; store?: Store }) {
   const stores: Store[] = store ? [store] : ["pg", "bq"];
+  const [round, setRound] = useState(0); // a new round after a reset: the buttons start empty
+  const [said, setSaid] = useState<Measured | null>(null);
+  const done = (answer: Measured) => {
+    setSaid(answer);
+    if (!answer.error) setRound((n) => n + 1);
+  };
   return (
-    <div className="measures">
-      {stores.map((each) => (
-        <One key={each} workload={workload} store={each} />
-      ))}
-    </div>
+    <>
+      <div className="measures">
+        {stores.map((each) => (
+          <One key={`${each}-${round}`} workload={workload} store={each} />
+        ))}
+      </div>
+      <div className="measure-reset-row">
+        <Reset workload={workload} onDone={done} />
+        {said && <span className={said.error ? "measure-err" : undefined}>{said.error ?? said.reset}</span>}
+      </div>
+    </>
   );
 }
